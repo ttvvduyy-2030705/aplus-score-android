@@ -1,0 +1,2336 @@
+import React, {
+  forwardRef,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {getFlagText, normalizePlayerCountry} from 'platform/windows/flags';
+import {findNodeHandle, NativeModules, PixelRatio, Platform} from 'react-native';
+import Slider from '@react-native-community/slider';
+import {
+  Pressable,
+  StatusBar,
+  StyleSheet,
+  Text as RNText,
+  View as RNView,
+} from 'react-native';
+
+import View from 'components/View';
+import Text from 'components/Text';
+import Video from 'components/Video';
+
+import i18n from 'i18n';
+import colors from 'configuration/colors';
+
+import WebCamViewModel, {Props} from './WebCamViewModel';
+import PoolBroadcastScoreboard from 'components/PoolBroadcastScoreboard';
+import CaromBroadcastScoreboard from 'components/CaromBroadcastScoreboard';
+import {isCaromGame, isPool10Game, isPool15Game, isPool9Game} from 'utils/game';
+import {shouldShowMatchOverlay} from 'utils/matchOverlay';
+import {
+  EMPTY_POOL_CAMERA_SCOREBOARD_STATE,
+  subscribePoolCameraScoreboardState,
+  type PoolCameraScoreboardState,
+} from './poolScoreboardStore';
+import {
+  EMPTY_CAROM_CAMERA_SCOREBOARD_STATE,
+  subscribeCaromCameraScoreboardState,
+  type CaromCameraScoreboardState,
+} from './caromScoreboardStore';
+import useSafeScreenInsets, {ZERO_INSETS} from 'theme/safeArea';
+import {WebcamType} from 'types/webcam';
+import {setCameraFullscreen} from '../../cameraFullscreenStore';
+import {updateYouTubeNativeOverlay} from 'services/youtubeNativeLive';
+import useDesignSystem from 'theme/useDesignSystem';
+import {createGameplayLayoutRules, createGameplayStyles} from '../../layoutRules';
+import {useAplusPro} from 'features/subscription';
+import {LanguageContext} from 'context/language';
+
+const WindowsOnlyUnusedNativeLivePreview = (_props: any) => null;
+
+const DEBUG_CAMERA = false;
+const LIVE_OVERLAY_SNAPSHOT_WIDTH = 1920;
+const LIVE_OVERLAY_SNAPSHOT_HEIGHT = 1080;
+const LIVE_OVERLAY_SNAPSHOT_MIN_INTERVAL_MS = 250;
+const ENABLE_YOUTUBE_OVERLAY_SNAPSHOT_CAPTURE = true;
+
+// Encoded live overlay sizing values.
+// Keep gameplay camera/fullscreen/replay metrics untouched.
+const LIVE_OVERLAY_LOGO_WIDTH_RATIO = 0.13;
+const LIVE_OVERLAY_LOGO_HEIGHT_RATIO = 0.085;
+const LIVE_OVERLAY_LOGO_MARGIN_X_RATIO = 0.025;
+const LIVE_OVERLAY_LOGO_MARGIN_TOP_RATIO = 0.03;
+const LIVE_OVERLAY_LOGO_MARGIN_BOTTOM_RATIO = 0.04;
+const LIVE_OVERLAY_POOL_WIDTH_RATIO = 0.86;
+const LIVE_OVERLAY_POOL_BOTTOM_RATIO = 0;
+const LIVE_OVERLAY_POOL_HEIGHT_RATIO = 0.096;
+const LIVE_OVERLAY_CAROM_SAMPLE_WIDTH_RATIO = 0.28;
+const LIVE_OVERLAY_CAROM_ONLY_WIDTH_SCALE = 0.5;
+const LIVE_OVERLAY_CAROM_WIDTH_RATIO =
+  LIVE_OVERLAY_CAROM_SAMPLE_WIDTH_RATIO * LIVE_OVERLAY_CAROM_ONLY_WIDTH_SCALE;
+const LIVE_OVERLAY_CAROM_HEIGHT_RATIO = 0.145;
+const LIVE_OVERLAY_CAROM_LEFT_RATIO = 0.024;
+const LIVE_OVERLAY_CAROM_BOTTOM_RATIO = 0.04;
+
+const liveOverlayPx = (value: number) => Math.round(value);
+
+const LIVE_OVERLAY_LOGO_WIDTH = liveOverlayPx(
+  LIVE_OVERLAY_SNAPSHOT_WIDTH * LIVE_OVERLAY_LOGO_WIDTH_RATIO,
+);
+const LIVE_OVERLAY_LOGO_HEIGHT = liveOverlayPx(
+  LIVE_OVERLAY_SNAPSHOT_HEIGHT * LIVE_OVERLAY_LOGO_HEIGHT_RATIO,
+);
+const LIVE_OVERLAY_LOGO_MARGIN_X = liveOverlayPx(
+  LIVE_OVERLAY_SNAPSHOT_WIDTH * LIVE_OVERLAY_LOGO_MARGIN_X_RATIO,
+);
+const LIVE_OVERLAY_LOGO_MARGIN_TOP = liveOverlayPx(
+  LIVE_OVERLAY_SNAPSHOT_HEIGHT * LIVE_OVERLAY_LOGO_MARGIN_TOP_RATIO,
+);
+const LIVE_OVERLAY_LOGO_MARGIN_BOTTOM = liveOverlayPx(
+  LIVE_OVERLAY_SNAPSHOT_HEIGHT * LIVE_OVERLAY_LOGO_MARGIN_BOTTOM_RATIO,
+);
+const LIVE_OVERLAY_POOL_BOTTOM = liveOverlayPx(
+  LIVE_OVERLAY_SNAPSHOT_HEIGHT * LIVE_OVERLAY_POOL_BOTTOM_RATIO,
+);
+const LIVE_OVERLAY_CAROM_LEFT = liveOverlayPx(
+  LIVE_OVERLAY_SNAPSHOT_WIDTH * LIVE_OVERLAY_CAROM_LEFT_RATIO,
+);
+const LIVE_OVERLAY_CAROM_BOTTOM = liveOverlayPx(
+  LIVE_OVERLAY_SNAPSHOT_HEIGHT * LIVE_OVERLAY_CAROM_BOTTOM_RATIO,
+);
+
+type LiveOverlayMode = 'pool' | 'carom';
+
+const getLiveOverlayLayoutSpec = (mode: LiveOverlayMode) => {
+  const videoWidth = LIVE_OVERLAY_SNAPSHOT_WIDTH;
+  const videoHeight = LIVE_OVERLAY_SNAPSHOT_HEIGHT;
+  const logoRect = {
+    x: LIVE_OVERLAY_LOGO_MARGIN_X,
+    y: LIVE_OVERLAY_LOGO_MARGIN_TOP,
+    w: LIVE_OVERLAY_LOGO_WIDTH,
+    h: LIVE_OVERLAY_LOGO_HEIGHT,
+  };
+  const caromSampleScoreboardWidth = liveOverlayPx(
+    videoWidth * LIVE_OVERLAY_CAROM_SAMPLE_WIDTH_RATIO,
+  );
+  const caromScoreboardWidth = liveOverlayPx(
+    caromSampleScoreboardWidth * LIVE_OVERLAY_CAROM_ONLY_WIDTH_SCALE,
+  );
+  const scoreboardWidth =
+    mode === 'carom'
+      ? caromScoreboardWidth
+      : liveOverlayPx(videoWidth * LIVE_OVERLAY_POOL_WIDTH_RATIO);
+  const scoreboardHeight =
+    mode === 'carom'
+      ? liveOverlayPx(videoHeight * LIVE_OVERLAY_CAROM_HEIGHT_RATIO)
+      : liveOverlayPx(videoHeight * LIVE_OVERLAY_POOL_HEIGHT_RATIO);
+  const bottomMargin =
+    mode === 'carom' ? LIVE_OVERLAY_CAROM_BOTTOM : LIVE_OVERLAY_POOL_BOTTOM;
+  const scoreboardRect = {
+    x:
+      mode === 'carom'
+        ? LIVE_OVERLAY_CAROM_LEFT
+        : liveOverlayPx((videoWidth - scoreboardWidth) / 2),
+    y: liveOverlayPx(videoHeight - bottomMargin - scoreboardHeight),
+    w: scoreboardWidth,
+    h: scoreboardHeight,
+  };
+
+  return {
+    videoWidth,
+    videoHeight,
+    logoRect,
+    scoreboardRect,
+    bottomMargin,
+    gap: liveOverlayPx(videoHeight * 0.018),
+    snapshotSize: `${videoWidth}x${videoHeight}`,
+    scaleFactor: 1,
+    caromOnlyWidthScale:
+      mode === 'carom' ? LIVE_OVERLAY_CAROM_ONLY_WIDTH_SCALE : undefined,
+    caromSampleScoreboardWidth:
+      mode === 'carom' ? caromSampleScoreboardWidth : undefined,
+    caromLeftAnchored: mode === 'carom',
+  };
+};
+
+const formatLiveOverlayRect = (rect: {x: number; y: number; w: number; h: number}) => {
+  return `${rect.x},${rect.y},${rect.w},${rect.h}`;
+};
+
+const formatWarmUpOverlayTime = (value?: number) => {
+  const totalSeconds = Math.max(0, Math.ceil(Number(value || 0)));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+};
+
+type YouTubeNativeCaptureModule = {
+  captureOverlayView?: (
+    nativeTag: number,
+    width: number,
+    height: number,
+  ) => Promise<string> | string;
+};
+
+const getYouTubeNativeCaptureModule = (): YouTubeNativeCaptureModule | null => {
+  const modules = NativeModules as any;
+  return modules?.WindowsFfmpegLiveModule || modules?.YouTubeLiveModule || null;
+};
+
+const captureNativeYouTubeOverlayRef = async (viewRef: any): Promise<string> => {
+  const nativeTag = findNodeHandle(viewRef);
+  if (!nativeTag) {
+    throw new Error('overlay snapshot ref is not attached to native view');
+  }
+
+  const captureModule = getYouTubeNativeCaptureModule();
+  if (!captureModule?.captureOverlayView) {
+    throw new Error('WindowsFfmpegLiveModule.captureOverlayView is not available');
+  }
+
+  const capturedUri = await captureModule.captureOverlayView(
+    nativeTag,
+    LIVE_OVERLAY_SNAPSHOT_WIDTH,
+    LIVE_OVERLAY_SNAPSHOT_HEIGHT,
+  );
+
+  if (!capturedUri) {
+    throw new Error('native React fullscreen overlay capture returned an empty uri');
+  }
+
+  return String(capturedUri);
+};
+
+const debugCameraLog = (...args: any[]) => {
+  if (DEBUG_CAMERA) {
+    console.log(...args);
+  }
+};
+
+type CameraZoomUnit = 'ratio' | 'percent' | 'absolute';
+
+type CameraZoomInfo = {
+  supported?: boolean;
+  minZoom?: number;
+  maxZoom?: number;
+  zoom?: number;
+  source?: string;
+  unit?: CameraZoomUnit;
+};
+
+const ZOOM_EPSILON = 0.001;
+
+const finiteNumber = (value: unknown, fallback: number) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+};
+
+const hasUsableZoomRange = (minZoom: number, maxZoom: number) => {
+  return Number.isFinite(minZoom) && Number.isFinite(maxZoom) && maxZoom - minZoom > ZOOM_EPSILON;
+};
+
+const normalizeZoomUnit = (value?: string): CameraZoomUnit => {
+  return value === 'percent' || value === 'absolute' ? value : 'ratio';
+};
+
+const clamp = (value: number, min: number, max: number) => {
+  return Math.max(min, Math.min(value, max));
+};
+
+const formatZoomLabel = (value: number, unit: CameraZoomUnit = 'ratio') => {
+  if (unit === 'percent') {
+    return `${Math.round(value)}%`;
+  }
+
+  if (unit === 'absolute') {
+    return Number.isInteger(value) ? `Z ${value.toFixed(0)}` : `Z ${value.toFixed(1)}`;
+  }
+
+  if (value >= 10 || Number.isInteger(value)) {
+    return `${value.toFixed(0)}x`;
+  }
+
+  return `${value.toFixed(1)}x`;
+};
+
+
+const getYouTubeSourceLock = (): 'back' | 'front' | 'external' | null => {
+  const value = (globalThis as any).__APLUS_YOUTUBE_SOURCE_LOCK__;
+  return value === 'back' || value === 'front' || value === 'external'
+    ? value
+    : null;
+};
+
+const getCurrentCameraSourceSnapshot = (): 'back' | 'front' | 'external' | null => {
+  const value = (globalThis as any).__APLUS_CURRENT_CAMERA_SOURCE__;
+  return value === 'back' || value === 'front' || value === 'external'
+    ? value
+    : null;
+};
+
+const hasDetectedExternalWebcam = (): boolean => {
+  return (globalThis as any).__APLUS_UVC_PRESENT__ === true;
+};
+
+type RecordingInfo = {
+  state?: 'idle' | 'starting' | 'recording' | 'stopping';
+  activeBackend?: 'vision' | 'uvc' | 'youtube-native' | null;
+  source?: 'back' | 'front' | 'external';
+  isRecording?: boolean;
+};
+
+const getCameraRecordingInfo = (cameraRef: any): RecordingInfo => {
+  const fromRef = cameraRef?.current?.getRecordingInfo?.();
+  if (fromRef) {
+    return fromRef;
+  }
+
+  return (globalThis as any).__APLUS_CAMERA_RECORDING_SNAPSHOT__ || {
+    state: 'idle',
+    activeBackend: null,
+    source: 'back',
+    isRecording: false,
+  };
+};
+
+type WebCamComponentProps = Props & {
+  hideBottomControls?: boolean;
+  cameraScaleMode?: 'contain' | 'cover';
+  forceFullscreen?: boolean;
+};
+
+export type WebCamHandle = {
+  refresh: () => void;
+  switchCamera: () => void;
+  rewatch: () => void;
+  canRefresh: () => boolean;
+  canSwitchCamera: () => boolean;
+  canRewatch: () => boolean;
+};
+
+type CameraScoreboardOverlayProps = {
+  fullscreenMode?: boolean;
+  bottomOffset?: number;
+  liveOutput?: boolean;
+  liveVideoWidth?: number;
+  liveVideoHeight?: number;
+};
+
+const PoolScoreboardOverlay = memo(({
+  fullscreenMode = false,
+  bottomOffset,
+  liveOutput = false,
+  liveVideoWidth = LIVE_OVERLAY_SNAPSHOT_WIDTH,
+  liveVideoHeight = LIVE_OVERLAY_SNAPSHOT_HEIGHT,
+}: CameraScoreboardOverlayProps) => {
+  const [state, setState] = useState<PoolCameraScoreboardState>(
+    EMPTY_POOL_CAMERA_SCOREBOARD_STATE,
+  );
+
+  useEffect(() => {
+    return subscribePoolCameraScoreboardState(setState);
+  }, []);
+
+  const poolCategory = state.gameSettings?.category;
+  const shouldShowPool =
+    shouldShowMatchOverlay(state.gameSettings, state.playerSettings) &&
+    (isPool9Game(poolCategory) ||
+      isPool10Game(poolCategory) ||
+      isPool15Game(poolCategory));
+
+  if (!shouldShowPool) {
+    return null;
+  }
+
+  return (
+    <PoolBroadcastScoreboard
+      currentPlayerIndex={state.currentPlayerIndex}
+      countdownTime={state.countdownTime}
+      gameSettings={state.gameSettings}
+      playerSettings={state.playerSettings}
+      variant={liveOutput ? 'live' : fullscreenMode ? 'fullscreen' : 'camera'}
+      bottomOffset={bottomOffset ?? 0}
+      liveVideoWidth={liveVideoWidth}
+      liveVideoHeight={liveVideoHeight}
+    />
+  );
+});
+
+const CaromScoreboardOverlay = memo(({
+  fullscreenMode = false,
+  bottomOffset,
+  liveOutput = false,
+  liveVideoWidth = LIVE_OVERLAY_SNAPSHOT_WIDTH,
+  liveVideoHeight = LIVE_OVERLAY_SNAPSHOT_HEIGHT,
+}: CameraScoreboardOverlayProps) => {
+  const [state, setState] = useState<CaromCameraScoreboardState>(
+    EMPTY_CAROM_CAMERA_SCOREBOARD_STATE,
+  );
+
+  useEffect(() => {
+    return subscribeCaromCameraScoreboardState(setState);
+  }, []);
+
+  const shouldShowCarom =
+    (fullscreenMode || liveOutput) &&
+    shouldShowMatchOverlay(state.gameSettings, state.playerSettings) &&
+    isCaromGame(state.gameSettings?.category);
+
+  if (!shouldShowCarom) {
+    return null;
+  }
+
+  return (
+    <CaromBroadcastScoreboard
+      currentPlayerIndex={state.currentPlayerIndex}
+      countdownTime={state.countdownTime}
+      totalTurns={state.totalTurns}
+      gameSettings={state.gameSettings}
+      playerSettings={state.playerSettings}
+      variant={liveOutput ? 'live' : fullscreenMode ? 'fullscreen' : 'camera'}
+      bottomOffset={bottomOffset ?? (liveOutput ? LIVE_OVERLAY_CAROM_BOTTOM : undefined)}
+      liveVideoWidth={liveVideoWidth}
+      liveVideoHeight={liveVideoHeight}
+    />
+  );
+});
+
+const WebCam = forwardRef<WebCamHandle, WebCamComponentProps>((props, ref) => {
+  const {language} = useContext(LanguageContext);
+  void language;
+  const viewModel = WebCamViewModel(props);
+  const {isAplusProActive, showPaywall} = useAplusPro();
+  const isCameraPremiumLocked = !isAplusProActive;
+  const {adaptive, design} = useDesignSystem();
+  const safeInsets = useSafeScreenInsets();
+  const overlaySafeInsets = useMemo(() => ({
+    ...safeInsets,
+    top: ZERO_INSETS.top,
+  }), [safeInsets.bottom, safeInsets.left, safeInsets.right, safeInsets.top]);
+  const layoutRules = useMemo(() => createGameplayLayoutRules(adaptive, design), [adaptive.styleKey]);
+  const styles = useMemo(() => createStyles(adaptive, design, layoutRules, overlaySafeInsets), [adaptive.styleKey, overlaySafeInsets.top, overlaySafeInsets.right, overlaySafeInsets.bottom, overlaySafeInsets.left]);
+  const cameraScaleMode = props.cameraScaleMode || 'cover';
+  const isFullscreen = !!props.forceFullscreen;
+  const [cameraLayoutNonce, setCameraLayoutNonce] = useState(0);
+  const lastFullscreenLayoutLogRef = useRef('');
+  const showCameraPaywall = useCallback(() => {
+    showPaywall('camera');
+  }, [showPaywall]);
+
+  const [cameraVisualReady, setCameraVisualReady] = useState(false);
+  const [zoomSupported, setZoomSupported] = useState(false);
+  const [zoomMin, setZoomMin] = useState(1);
+  const [zoomMax, setZoomMax] = useState(1);
+  const [currentZoom, setCurrentZoom] = useState(1);
+  const [zoomUnit, setZoomUnit] = useState<CameraZoomUnit>('ratio');
+  const [matchOverlayState, setMatchOverlayState] =
+    useState<PoolCameraScoreboardState>(EMPTY_POOL_CAMERA_SCOREBOARD_STATE);
+  const [caromOverlayState, setCaromOverlayState] =
+    useState<CaromCameraScoreboardState>(EMPTY_CAROM_CAMERA_SCOREBOARD_STATE);
+  const liveOverlaySnapshotRef = useRef<RNView | null>(null);
+  const liveOverlaySnapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastLiveOverlaySnapshotSignatureRef = useRef('');
+  const liveOverlaySnapshotInFlightSignatureRef = useRef('');
+  const lastLiveOverlaySnapshotAtRef = useRef(0);
+  const lastLiveOverlayFullscreenStateRef = useRef<boolean | null>(null);
+  const [liveOverlaySnapshotLayout, setLiveOverlaySnapshotLayout] = useState({
+    width: LIVE_OVERLAY_SNAPSHOT_WIDTH,
+    height: LIVE_OVERLAY_SNAPSHOT_HEIGHT,
+  });
+
+  useEffect(() => {
+    return subscribePoolCameraScoreboardState(setMatchOverlayState);
+  }, []);
+
+  useEffect(() => {
+    return subscribeCaromCameraScoreboardState(setCaromOverlayState);
+  }, []);
+
+  const shouldShowCameraMatchOverlay = shouldShowMatchOverlay(
+    matchOverlayState.gameSettings,
+    matchOverlayState.playerSettings,
+  );
+  const poolOverlayCategory = matchOverlayState.gameSettings?.category;
+  const shouldShowPoolSnapshotOverlay =
+    shouldShowCameraMatchOverlay &&
+    (isPool9Game(poolOverlayCategory) ||
+      isPool10Game(poolOverlayCategory) ||
+      isPool15Game(poolOverlayCategory));
+  const shouldShowCaromSnapshotOverlay =
+    shouldShowMatchOverlay(caromOverlayState.gameSettings, caromOverlayState.playerSettings) &&
+    isCaromGame(caromOverlayState.gameSettings?.category);
+
+  useEffect(() => {
+    if (!props.forceFullscreen) {
+      return;
+    }
+
+    const applyFullscreenSystemChrome = () => {
+      StatusBar.setHidden(true, 'none');
+
+    };
+
+    applyFullscreenSystemChrome();
+    const timers = [80, 220, 500, 900].map(delay =>
+      setTimeout(applyFullscreenSystemChrome, delay),
+    );
+
+    return () => {
+      timers.forEach(clearTimeout);
+    };
+  }, [props.forceFullscreen]);
+
+  const zoomSupportedRef = useRef(false);
+  const zoomMinRef = useRef(1);
+  const zoomMaxRef = useRef(1);
+  const currentZoomRef = useRef(1);
+  const zoomUnitRef = useRef<CameraZoomUnit>('ratio');
+  const youtubeControllerRef = useRef<any>(null);
+  const lastStableZoomInfoRef = useRef<CameraZoomInfo | null>(null);
+  const fullscreenSourceRef =
+    useRef<'back' | 'front' | 'external' | null>(null);
+
+
+  useEffect(() => {
+    if (!isFullscreen) {
+      fullscreenSourceRef.current = null;
+    }
+
+    return () => {
+      fullscreenSourceRef.current = null;
+    };
+  }, [isFullscreen]);
+
+  // Livestream must not push a separate native/canvas scoreboard model.
+  // The React camera overlay below is the single source of truth for
+  // embedded camera, fullscreen, replay, and local live preview.
+
+  const liveSourceLock = getYouTubeSourceLock();
+  const currentCameraSource = getCurrentCameraSourceSnapshot();
+  const recordingInfo = getCameraRecordingInfo(props.cameraRef);
+
+  const externalLiveLocked =
+    recordingInfo?.isRecording === true &&
+    (recordingInfo?.source === 'external' || liveSourceLock === 'external');
+
+  const streamUri =
+    typeof viewModel.source?.uri === 'string' ? viewModel.source.uri.trim() : '';
+  const hasStreamUri = streamUri.length > 0;
+  const hasConfiguredIpCameraStream =
+    viewModel.webcamType === WebcamType.webcam && hasStreamUri;
+
+  const baseCameraSource = hasConfiguredIpCameraStream
+    ? 'external'
+    : currentCameraSource || liveSourceLock || 'back';
+
+  const effectiveCameraSource = hasConfiguredIpCameraStream
+    ? 'external'
+    : (isFullscreen ? fullscreenSourceRef.current : null) || baseCameraSource;
+
+  const effectiveCameraFacing =
+    effectiveCameraSource === 'front' ? 'front' : 'back';
+
+  const effectiveSourceType = hasConfiguredIpCameraStream
+    ? 'webcam'
+    : effectiveCameraSource === 'external'
+      ? 'webcam'
+      : 'phone';
+
+  const fullscreenSourceMode: 'usb' | 'ip' | 'phone' = hasConfiguredIpCameraStream
+    ? 'ip'
+    : effectiveCameraSource === 'external'
+      ? 'usb'
+      : 'phone';
+
+  useEffect(() => {
+    if (!isFullscreen) {
+      return;
+    }
+
+    console.log('[FullscreenCamera] enter');
+    console.log(`[FullscreenCamera] sourceMode=${fullscreenSourceMode}`);
+    console.log(`[FullscreenCamera] resizeMode=${cameraScaleMode}`);
+    setCameraLayoutNonce(prev => prev + 1);
+  }, [cameraScaleMode, fullscreenSourceMode, isFullscreen]);
+
+  const showLogoOnly = !hasDetectedExternalWebcam() && !hasConfiguredIpCameraStream;
+  const handleCameraReadyChange = useCallback(
+    (nextReady: boolean) => {
+      if (isCameraPremiumLocked) {
+        setCameraVisualReady(false);
+        props.setIsCameraReady(false);
+        return;
+      }
+      setCameraVisualReady(prev => (prev === nextReady ? prev : nextReady));
+      props.setIsCameraReady(nextReady);
+      debugCameraLog('[WebCam] visual ready changed', {
+        nextReady,
+        effectiveCameraSource,
+        effectiveSourceType,
+        streamUri,
+      });
+    },
+    [effectiveCameraSource, effectiveSourceType, isCameraPremiumLocked, props.setIsCameraReady, streamUri],
+  );
+
+  useEffect(() => {
+    if (isCameraPremiumLocked) {
+      setCameraVisualReady(false);
+      props.setIsCameraReady(false);
+      return;
+    }
+
+    setCameraVisualReady(false);
+    debugCameraLog('[WebCam] reset visual ready for source signature', {
+      effectiveCameraSource,
+      effectiveSourceType,
+      streamUri,
+      youtubeLivePreviewActive: !!props.youtubeLivePreviewActive,
+      refreshing: !!viewModel.refreshing,
+    });
+  }, [
+    effectiveCameraSource,
+    effectiveSourceType,
+    isCameraPremiumLocked,
+    streamUri,
+    props.youtubeLivePreviewActive,
+    viewModel.refreshing,
+  ]);
+
+  const effectiveCameraReady =
+    effectiveSourceType === 'phone' && Platform.OS !== 'windows'
+      ? props.isCameraReady && cameraVisualReady
+      : props.isCameraReady || cameraVisualReady;
+  const shouldShowPhonePlaceholder =
+    effectiveSourceType === 'phone' && !effectiveCameraReady;
+  const shouldShowPhoneLogoOverlay = false;
+  const shouldShowExternalPlaceholder =
+    effectiveSourceType === 'webcam' &&
+    (!effectiveCameraReady || viewModel.refreshing);
+  const shouldShowLogoPlaceholder =
+    isCameraPremiumLocked || shouldShowPhonePlaceholder || shouldShowExternalPlaceholder;
+  // v51: keep preview visible during Windows YouTube live. Native live capture now
+  // runs in parallel using its own shared-read MediaCapture reader.
+  const releaseCameraPreviewForFfmpegLive = false;
+  // v56: Do NOT switch the visible Windows camera to the unused native preview branch.
+  // That branch renders a placeholder/null view on Windows and made the in-game camera
+  // turn black during YouTube live. Keep the normal <Video /> preview mounted.
+  const useYouTubeNativePreview = false;
+  const shouldRenderVideoComponent =
+    !isCameraPremiumLocked &&
+    !releaseCameraPreviewForFfmpegLive &&
+    (!viewModel.refreshing || useYouTubeNativePreview);
+  const shouldRenderPreview = !isCameraPremiumLocked && shouldRenderVideoComponent && effectiveCameraReady;
+  const shouldShowFullscreenFab =
+    !isCameraPremiumLocked &&
+    shouldRenderVideoComponent &&
+    !viewModel.refreshing &&
+    (shouldRenderPreview || effectiveSourceType === 'webcam');
+  const shouldShowOuterLogoOverlay = false;
+
+  useEffect(() => {
+    debugCameraLog('[WebCam] placeholder branch', {
+      effectiveCameraSource,
+      effectiveSourceType,
+      streamUri,
+      hasStreamUri,
+      propsIsCameraReady: props.isCameraReady,
+      cameraVisualReady,
+      effectiveCameraReady,
+      shouldShowPhonePlaceholder,
+      shouldShowPhoneLogoOverlay,
+      shouldShowExternalPlaceholder,
+      shouldShowLogoPlaceholder,
+      shouldShowOuterLogoOverlay,
+      shouldShowFullscreenFab,
+    });
+  }, [
+    cameraVisualReady,
+    effectiveCameraSource,
+    effectiveSourceType,
+    effectiveCameraReady,
+    hasStreamUri,
+    props.isCameraReady,
+    shouldShowExternalPlaceholder,
+    shouldShowLogoPlaceholder,
+    shouldShowOuterLogoOverlay,
+    shouldShowFullscreenFab,
+    shouldShowPhoneLogoOverlay,
+    shouldShowPhonePlaceholder,
+    streamUri,
+  ]);
+
+  const canRewatch = useMemo(() => {
+    return props.isStarted && props.isPaused;
+  }, [props.isStarted, props.isPaused]);
+
+  const getCameraHandle = useCallback(() => {
+    const normalCameraHandle = (props.cameraRef as any)?.current ?? null;
+    const youtubeNativeHandle = youtubeControllerRef.current;
+
+    // Android hiện đang để useYouTubeNativePreview=false, nghĩa là preview thật vẫn là
+    // <Video /> ở props.cameraRef. Trước đây chỉ cần youtubeLivePreviewActive=true là
+    // hàm này trả về youtubeControllerRef, dù controller đó null/không điều khiển preview
+    // đang hiển thị. Hậu quả: UI zoom hiện theo state cũ nhưng kéo không chạm tới camera thật.
+    if (
+      props.youtubeLivePreviewActive &&
+      !externalLiveLocked &&
+      youtubeNativeHandle?.getZoomInfo &&
+      youtubeNativeHandle?.setZoom
+    ) {
+      return youtubeNativeHandle;
+    }
+
+    return normalCameraHandle;
+  }, [props.cameraRef, props.youtubeLivePreviewActive, externalLiveLocked]);
+
+
+const syncZoomInfo = useCallback(() => {
+  const cameraHandle = getCameraHandle();
+  const info = cameraHandle?.getZoomInfo?.() as CameraZoomInfo | undefined;
+
+  const commitZoomState = (
+    nextZoomSupported: boolean,
+    nextMinZoom: number,
+    nextMaxZoom: number,
+    nextCurrentZoom: number,
+    nextZoomUnit: CameraZoomUnit,
+  ) => {
+    if (zoomSupportedRef.current !== nextZoomSupported) {
+      zoomSupportedRef.current = nextZoomSupported;
+      setZoomSupported(nextZoomSupported);
+    }
+
+    if (Number(zoomMinRef.current) !== Number(nextMinZoom)) {
+      zoomMinRef.current = nextMinZoom;
+      setZoomMin(nextMinZoom);
+    }
+
+    if (Number(zoomMaxRef.current) !== Number(nextMaxZoom)) {
+      zoomMaxRef.current = nextMaxZoom;
+      setZoomMax(nextMaxZoom);
+    }
+
+    if (Number(currentZoomRef.current) !== Number(nextCurrentZoom)) {
+      currentZoomRef.current = nextCurrentZoom;
+      setCurrentZoom(nextCurrentZoom);
+    }
+
+    if (zoomUnitRef.current !== nextZoomUnit) {
+      zoomUnitRef.current = nextZoomUnit;
+      setZoomUnit(nextZoomUnit);
+    }
+  };
+
+  if (!info) {
+    // Không có handle/getZoomInfo nghĩa là hiện tại không có API nào điều khiển
+    // đúng preview đang hiển thị. Không được giữ lastStableZoomInfo vì sẽ sinh
+    // slider zoom giả: UI kéo được nhưng camera không đổi hình.
+    lastStableZoomInfoRef.current = null;
+    commitZoomState(false, 1, 1, 1, 'ratio');
+    return;
+  }
+
+  const minZoom = finiteNumber(info.minZoom, 1);
+  const maxZoom = finiteNumber(info.maxZoom, minZoom);
+  const zoom = clamp(finiteNumber(info.zoom, minZoom), minZoom, maxZoom);
+  const unit = normalizeZoomUnit(info.unit);
+  const supported = (info.supported === true || hasUsableZoomRange(minZoom, maxZoom)) && hasUsableZoomRange(minZoom, maxZoom);
+
+  if (supported) {
+    lastStableZoomInfoRef.current = {
+      ...info,
+      supported: true,
+      minZoom,
+      maxZoom,
+      zoom,
+      unit,
+    };
+  } else {
+    lastStableZoomInfoRef.current = null;
+  }
+
+  commitZoomState(supported, minZoom, maxZoom, zoom, unit);
+}, [getCameraHandle]);
+
+  useEffect(() => {
+    syncZoomInfo();
+
+    const timeouts = [150, 500, 1200].map(delay => {
+      return setTimeout(() => {
+        syncZoomInfo();
+      }, delay);
+    });
+
+    return () => {
+      timeouts.forEach(clearTimeout);
+    };
+  }, [syncZoomInfo, isFullscreen, props.isCameraReady]);
+
+  useEffect(() => {
+    lastStableZoomInfoRef.current = null;
+    zoomSupportedRef.current = false;
+    zoomMinRef.current = 1;
+    zoomMaxRef.current = 1;
+    currentZoomRef.current = 1;
+    zoomUnitRef.current = 'ratio';
+    setZoomSupported(false);
+    setZoomMin(1);
+    setZoomMax(1);
+    setCurrentZoom(1);
+    setZoomUnit('ratio');
+    syncZoomInfo();
+  }, [effectiveCameraSource, effectiveSourceType, streamUri, syncZoomInfo]);
+
+
+const applyZoom = useCallback(
+  (nextZoom: number, options?: {finalize?: boolean}) => {
+    const cameraHandle = getCameraHandle();
+    if (!cameraHandle?.setZoom) {
+      return;
+    }
+
+    const info = cameraHandle?.getZoomInfo?.() as CameraZoomInfo | undefined;
+    const minZoom = finiteNumber(info?.minZoom, zoomMinRef.current);
+    const maxZoom = finiteNumber(info?.maxZoom, zoomMaxRef.current);
+    const unit = normalizeZoomUnit(info?.unit ?? zoomUnitRef.current);
+    const supported = (info?.supported === true || zoomSupportedRef.current) && hasUsableZoomRange(minZoom, maxZoom);
+
+    if (!supported) {
+      syncZoomInfo();
+      return;
+    }
+
+    const clampedZoom = clamp(nextZoom, minZoom, maxZoom);
+    let appliedZoom: any;
+    try {
+      appliedZoom = cameraHandle.setZoom(clampedZoom);
+    } catch (error) {
+      lastStableZoomInfoRef.current = null;
+      zoomSupportedRef.current = false;
+      setZoomSupported(false);
+      syncZoomInfo();
+      return;
+    }
+
+    const commitAppliedZoom = (value: number) => {
+      const resolvedZoom = clamp(finiteNumber(value, clampedZoom), minZoom, maxZoom);
+      currentZoomRef.current = resolvedZoom;
+      setCurrentZoom(resolvedZoom);
+      zoomUnitRef.current = unit;
+      setZoomUnit(unit);
+
+      lastStableZoomInfoRef.current = {
+        ...(lastStableZoomInfoRef.current || {}),
+        supported: true,
+        minZoom,
+        maxZoom,
+        zoom: resolvedZoom,
+        source: effectiveCameraSource,
+        unit,
+      };
+    };
+
+    if (appliedZoom && typeof appliedZoom.then === 'function') {
+      commitAppliedZoom(clampedZoom);
+      appliedZoom
+        .then((resolved: unknown) => {
+          commitAppliedZoom(typeof resolved === 'number' ? resolved : clampedZoom);
+          syncZoomInfo();
+        })
+        .catch(() => {
+          lastStableZoomInfoRef.current = null;
+          zoomSupportedRef.current = false;
+          setZoomSupported(false);
+          syncZoomInfo();
+        });
+    } else {
+      commitAppliedZoom(typeof appliedZoom === 'number' ? appliedZoom : clampedZoom);
+    }
+
+    if (options?.finalize) {
+      syncZoomInfo();
+    }
+  },
+  [effectiveCameraSource, getCameraHandle, syncZoomInfo],
+);
+
+const sliderMinZoom = useMemo(() => {
+  return Number.isFinite(zoomMin) ? zoomMin : 1;
+}, [zoomMin]);
+
+const sliderMaxZoom = useMemo(() => {
+  const normalizedMax = Number.isFinite(zoomMax) ? zoomMax : sliderMinZoom;
+  return Math.max(sliderMinZoom, normalizedMax);
+}, [sliderMinZoom, zoomMax]);
+
+const sliderZoomSupported = zoomSupported && hasUsableZoomRange(sliderMinZoom, sliderMaxZoom);
+
+const handleZoomSliderChange = useCallback(
+  (nextValue: number) => {
+    if (!sliderZoomSupported) {
+      return;
+    }
+
+    applyZoom(nextValue);
+  },
+  [applyZoom, sliderZoomSupported],
+);
+
+const handleZoomSliderComplete = useCallback(
+  (nextValue: number) => {
+    if (!sliderZoomSupported) {
+      return;
+    }
+
+    applyZoom(nextValue, {finalize: true});
+  },
+  [applyZoom, sliderZoomSupported],
+);
+
+  const openFullscreen = () => {
+    if (isCameraPremiumLocked) {
+      showCameraPaywall();
+      return;
+    }
+
+    const nextSource =
+      effectiveCameraSource === 'front' ||
+      effectiveCameraSource === 'back' ||
+      effectiveCameraSource === 'external'
+        ? effectiveCameraSource
+        : currentCameraSource ||
+          liveSourceLock ||
+          (viewModel.webcamType === WebcamType.webcam ? 'external' : 'back');
+
+    fullscreenSourceRef.current = nextSource;
+    setCameraFullscreen(true);
+  };
+
+  const closeFullscreen = () => {
+    fullscreenSourceRef.current = null;
+    setCameraFullscreen(false);
+  };
+  const onSwitchCameraPress = () => {
+    if (isCameraPremiumLocked) {
+      showCameraPaywall();
+      return;
+    }
+
+    if (externalLiveLocked) {
+      debugCameraLog(
+        '[WebCam] block switch camera while external recording lock is active',
+      );
+      return;
+    }
+
+    viewModel.onSwitchCamera();
+  };
+
+  // Still publish the offscreen fullscreen-style overlay snapshot for the live encoder.
+  const shouldPublishWindowsLiveOverlaySnapshot =
+    Platform.OS === 'windows' && !!props.youtubeLivePreviewActive;
+  // Native live no longer owns any scoreboard/logo overlay. Keep the same
+  // React overlay used by normal camera/fullscreen/replay visible during live.
+  const suppressReactMatchOverlayForNativeLive = false;
+  const shouldPublishGameplayOverlaySnapshot =
+    ENABLE_YOUTUBE_OVERLAY_SNAPSHOT_CAPTURE &&
+    shouldPublishWindowsLiveOverlaySnapshot &&
+    (shouldShowPoolSnapshotOverlay || shouldShowCaromSnapshotOverlay);
+  const liveOverlaySnapshotReady =
+    liveOverlaySnapshotLayout.width > 0 && liveOverlaySnapshotLayout.height > 0;
+
+  const warmUpOverlaySeconds =
+    typeof props.warmUpCountdownTime === 'number' && props.warmUpCountdownTime > 0
+      ? Math.ceil(props.warmUpCountdownTime)
+      : undefined;
+  const shouldShowWarmUpOverlay = typeof warmUpOverlaySeconds === 'number';
+  const warmUpOverlayTimeText = shouldShowWarmUpOverlay
+    ? formatWarmUpOverlayTime(warmUpOverlaySeconds)
+    : '';
+  const warmUpOverlayTitleText = String(
+    props.gameBreakEnabled ? i18n.t('gameBreak') : i18n.t('warmUp'),
+  ).toUpperCase();
+
+  const isExplicitRecording =
+    recordingInfo?.isRecording === true ||
+    recordingInfo?.state === 'starting' ||
+    recordingInfo?.state === 'recording' ||
+    recordingInfo?.state === 'stopping';
+
+  const isVideoSessionLocked =
+    isExplicitRecording || !!props.youtubeLivePreviewActive || externalLiveLocked;
+
+  const allowRefresh = !isCameraPremiumLocked && !viewModel.refreshing && !isVideoSessionLocked;
+
+  const allowSwitchCamera = !isCameraPremiumLocked && !isVideoSessionLocked;
+  const lastButtonAvailabilityLogRef = useRef('');
+
+  useEffect(() => {
+    if (!__DEV__ || !DEBUG_CAMERA) {
+      return;
+    }
+
+    const payload = {
+      allowRefresh,
+      allowSwitchCamera,
+      isExplicitRecording,
+      isVideoSessionLocked,
+      recordingState: recordingInfo?.state || 'idle',
+      refreshing: viewModel.refreshing,
+      youtubeLivePreviewActive: !!props.youtubeLivePreviewActive,
+    };
+
+    const key = JSON.stringify(payload);
+    if (key === lastButtonAvailabilityLogRef.current) {
+      return;
+    }
+
+    lastButtonAvailabilityLogRef.current = key;
+    debugCameraLog('[WebCam] button availability:', payload);
+  }, [
+    allowRefresh,
+    allowSwitchCamera,
+    isExplicitRecording,
+    isVideoSessionLocked,
+    recordingInfo?.state,
+    viewModel.refreshing,
+    props.youtubeLivePreviewActive,
+  ]);
+
+  const [cameraStageBounds, setCameraStageBounds] = useState({width: 0, height: 0});
+
+  const targetCameraAspectRatio = useMemo(() => {
+    if (effectiveCameraSource === 'external') {
+      return 16 / 9;
+    }
+
+    return props.innerControls ? 2 : 16 / 10;
+  }, [effectiveCameraSource, props.innerControls]);
+
+  const cameraStageStyle = undefined;
+
+  const showBottomControls =
+    (!props.innerControls || viewModel.innerControlsShow) &&
+    !isFullscreen &&
+    !props.hideBottomControls;
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      refresh: () => {
+        if (isCameraPremiumLocked) {
+          showCameraPaywall();
+          return;
+        }
+
+        if (allowRefresh) {
+          viewModel.onRefresh();
+        }
+      },
+      switchCamera: () => {
+        if (isCameraPremiumLocked) {
+          showCameraPaywall();
+          return;
+        }
+
+        if (allowSwitchCamera) {
+          onSwitchCameraPress();
+        }
+      },
+      rewatch: () => {
+        if (canRewatch) {
+          viewModel.onReWatch();
+        }
+      },
+      canRefresh: () => !!allowRefresh,
+      canSwitchCamera: () => !!allowSwitchCamera,
+      canRewatch: () => !!canRewatch,
+    }),
+    [
+      allowRefresh,
+      allowSwitchCamera,
+      canRewatch,
+      isCameraPremiumLocked,
+      onSwitchCameraPress,
+      showCameraPaywall,
+      viewModel,
+    ],
+  );
+
+  const fullLogoPlaceholder = (
+    <RNView style={styles.logoOnlyBackground} />
+  );
+
+  const liveOverlaySnapshotSignature = useMemo(() => {
+    if (!shouldPublishGameplayOverlaySnapshot) {
+      return 'hidden';
+    }
+
+    const mode = shouldShowCaromSnapshotOverlay ? 'carom' : 'pool';
+    const poolPlayers = matchOverlayState.playerSettings?.playingPlayers || [];
+    const caromPlayers = caromOverlayState.playerSettings?.playingPlayers || [];
+    const players = mode === 'carom' ? caromPlayers : poolPlayers;
+
+    return JSON.stringify({
+      mode,
+      currentPlayerIndex: mode === 'carom'
+        ? caromOverlayState.currentPlayerIndex
+        : matchOverlayState.currentPlayerIndex,
+      countdownTime: mode === 'carom'
+        ? caromOverlayState.countdownTime
+        : matchOverlayState.countdownTime,
+      totalTurns: caromOverlayState.totalTurns,
+      warmUpCountdownTime: warmUpOverlaySeconds ?? null,
+      warmUpLabel: shouldShowWarmUpOverlay ? warmUpOverlayTitleText : null,
+      gameBreakEnabled: !!props.gameBreakEnabled,
+      poolGoal: matchOverlayState.gameSettings?.players?.goal?.goal ?? matchOverlayState.playerSettings?.goal?.goal,
+      caromGoal: caromOverlayState.gameSettings?.players?.goal?.goal ?? caromOverlayState.playerSettings?.goal?.goal,
+      players: players.map((player: any) => ({
+        name: player?.name,
+        flag: getFlagText(normalizePlayerCountry(player)),
+        totalPoint: player?.totalPoint,
+        currentPoint: player?.proMode?.currentPoint,
+        highestRate: player?.proMode?.highestRate,
+        secondHighestRate: player?.proMode?.secondHighestRate,
+        average: player?.proMode?.average,
+      })),
+      fullscreen: isFullscreen,
+      activeSource: 'offscreen-live-overlay',
+    });
+  }, [
+    caromOverlayState,
+    isFullscreen,
+    matchOverlayState,
+    props.gameBreakEnabled,
+    shouldPublishGameplayOverlaySnapshot,
+    shouldShowCaromSnapshotOverlay,
+    warmUpOverlaySeconds,
+    warmUpOverlayTitleText,
+  ]);
+
+  useEffect(() => {
+    if (liveOverlaySnapshotTimerRef.current) {
+      clearTimeout(liveOverlaySnapshotTimerRef.current);
+      liveOverlaySnapshotTimerRef.current = null;
+    }
+
+    if (!shouldPublishWindowsLiveOverlaySnapshot) {
+      lastLiveOverlaySnapshotSignatureRef.current = '';
+      liveOverlaySnapshotInFlightSignatureRef.current = '';
+      lastLiveOverlaySnapshotAtRef.current = 0;
+      void updateYouTubeNativeOverlay({
+        visible: false,
+        source: 'gameplay-shared-overlay-snapshot',
+      } as any);
+      return;
+    }
+
+    if (!shouldPublishGameplayOverlaySnapshot) {
+      lastLiveOverlaySnapshotSignatureRef.current = 'hidden';
+      liveOverlaySnapshotInFlightSignatureRef.current = '';
+      void updateYouTubeNativeOverlay({
+        visible: false,
+        source: 'gameplay-shared-overlay-snapshot',
+      } as any);
+      return;
+    }
+
+    if (!liveOverlaySnapshotReady) {
+      lastLiveOverlaySnapshotSignatureRef.current = 'waiting-layout';
+      liveOverlaySnapshotInFlightSignatureRef.current = '';
+      console.log(
+        '[Live Overlay] desiredSource=gameplay-shared-overlay mounted=false snapshotEnabled=true overlaySkipReason=snapshot-view-not-laid-out keepLastGoodOverlay=true',
+      );
+      console.log(
+        `[Live Overlay Fullscreen] fullscreen=${isFullscreen} activeSource=offscreen-live-overlay snapshotRequested=false snapshotSkipReason=layout-zero overlayBitmapStillAvailable=true`,
+      );
+      // Do not send visible=false here: fullscreen enter/exit can temporarily
+      // remount/layout the source view. Native must keep the last good overlay
+      // bitmap until a fresh offscreen snapshot succeeds.
+      return;
+    }
+
+    if (
+      liveOverlaySnapshotSignature === lastLiveOverlaySnapshotSignatureRef.current ||
+      liveOverlaySnapshotSignature === liveOverlaySnapshotInFlightSignatureRef.current
+    ) {
+      return;
+    }
+
+    // v73 stable live: do not fire unlimited overlapping PNG captures while the
+    // camera/RTMP encoder is running.  The v2 low-delay build could request a new
+    // 1920x1080 snapshot every render before the previous capture finished, which
+    // flooded the JS/native bridge and made the YouTube live look unstable.  Keep
+    // score changes responsive, but cap overlay snapshots to a stable 250ms floor
+    // and mark the signature as in-flight before the async capture starts.
+    const delayMs = Math.max(
+      0,
+      LIVE_OVERLAY_SNAPSHOT_MIN_INTERVAL_MS -
+        (Date.now() - lastLiveOverlaySnapshotAtRef.current),
+    );
+
+    let cancelled = false;
+    liveOverlaySnapshotInFlightSignatureRef.current = liveOverlaySnapshotSignature;
+    liveOverlaySnapshotTimerRef.current = setTimeout(() => {
+      liveOverlaySnapshotTimerRef.current = null;
+
+      const captureOverlay = async () => {
+        const overlayRef = liveOverlaySnapshotRef.current;
+        if (!overlayRef || cancelled) {
+          console.log(
+            `[Live Overlay Fullscreen] fullscreen=${isFullscreen} activeSource=offscreen-live-overlay snapshotCaptured=false snapshotSkipReason=ref-null overlayBitmapStillAvailable=true`,
+          );
+          return;
+        }
+
+        try {
+          const mode = shouldShowCaromSnapshotOverlay ? 'carom' : 'pool';
+          const devicePixelRatio = PixelRatio.get();
+          const layoutSpec = getLiveOverlayLayoutSpec(mode);
+          const previousFullscreen = lastLiveOverlayFullscreenStateRef.current;
+          const snapshotReason =
+            previousFullscreen === null
+              ? 'initial'
+              : previousFullscreen !== isFullscreen
+                ? isFullscreen
+                  ? 'fullscreen-enter'
+                  : 'fullscreen-exit'
+                : 'state-change';
+          console.log(
+            `[Live Overlay Fullscreen] fullscreen=${isFullscreen} previousSourceRefMounted=${!!overlayRef} activeSource=offscreen-live-overlay snapshotRequested=true reason=${snapshotReason}`,
+          );
+          console.log(
+            `[Live Overlay] desiredSource=gameplay-shared-overlay mounted=true size=${liveOverlaySnapshotLayout.width}x${liveOverlaySnapshotLayout.height} mode=${mode} players=2 snapshotEnabled=true`,
+          );
+          console.log(
+            `[Live Overlay] snapshotRequested reason=${snapshotReason} source=gameplay-overlay layout=${liveOverlaySnapshotLayout.width}x${liveOverlaySnapshotLayout.height} mode=${mode} players=2`,
+          );
+          const caromLayoutLogSuffix =
+            mode === 'carom'
+              ? ` caromOnlyWidthScale=${layoutSpec.caromOnlyWidthScale} caromSampleWidth=${layoutSpec.caromSampleScoreboardWidth} leftAnchored=true poolUnchanged=true logoUnchanged=true`
+              : ' poolUnchanged=true logoUnchanged=true';
+          console.log(
+            `[Live Overlay Layout] video=${layoutSpec.videoWidth}x${layoutSpec.videoHeight} sampleBased=true mode=${mode} logoRect=${formatLiveOverlayRect(layoutSpec.logoRect)} scoreboardRect=${formatLiveOverlayRect(layoutSpec.scoreboardRect)} bottomMargin=${layoutSpec.bottomMargin} gap=${layoutSpec.gap} snapshotSize=${layoutSpec.snapshotSize} scaleFactor=${layoutSpec.scaleFactor}${caromLayoutLogSuffix}`,
+          );
+          console.log(
+            `[Live Overlay Quality] devicePixelRatio=${devicePixelRatio} viewLayout=${liveOverlaySnapshotLayout.width}x${liveOverlaySnapshotLayout.height} snapshotSize=${LIVE_OVERLAY_SNAPSHOT_WIDTH}x${LIVE_OVERLAY_SNAPSHOT_HEIGHT} videoOutput=encoder-size overlayDrawRect=${formatLiveOverlayRect(layoutSpec.scoreboardRect)} overlaySharp=true reason=snapshot-size-matches-live-layout`,
+          );
+
+          const capturedUri = await captureNativeYouTubeOverlayRef(overlayRef);
+
+          if (cancelled || !capturedUri) {
+            if (liveOverlaySnapshotInFlightSignatureRef.current === liveOverlaySnapshotSignature) {
+              liveOverlaySnapshotInFlightSignatureRef.current = '';
+            }
+            return;
+          }
+
+          lastLiveOverlaySnapshotSignatureRef.current = liveOverlaySnapshotSignature;
+          liveOverlaySnapshotInFlightSignatureRef.current = '';
+          lastLiveOverlaySnapshotAtRef.current = Date.now();
+          lastLiveOverlayFullscreenStateRef.current = isFullscreen;
+
+          console.log(
+            `[Live Overlay Fullscreen] fullscreen=${isFullscreen} activeSource=offscreen-live-overlay snapshotCaptured=true width=${LIVE_OVERLAY_SNAPSHOT_WIDTH} height=${LIVE_OVERLAY_SNAPSHOT_HEIGHT} overlayBitmapStillAvailable=true`,
+          );
+          console.log(
+            `[Live Overlay Snapshot] captured=true source=gameplay-overlay width=${LIVE_OVERLAY_SNAPSHOT_WIDTH} height=${LIVE_OVERLAY_SNAPSHOT_HEIGHT} format=png quality=lossless`,
+          );
+          console.log(`[Live Overlay] source=gameplay-shared-overlay mode=${mode} players=2 updated=true`);
+          console.log('[Live Output] frameSource=raw-camera+snapshot-overlay overlayAppliedToEncodedFrame=pending-native-apply');
+
+          await updateYouTubeNativeOverlay({
+            visible: true,
+            variant: mode,
+            source: 'gameplay-shared-overlay-snapshot',
+            snapshotUri: capturedUri,
+            snapshotWidth: LIVE_OVERLAY_SNAPSHOT_WIDTH,
+            snapshotHeight: LIVE_OVERLAY_SNAPSHOT_HEIGHT,
+            updatedAt: Date.now(),
+          } as any);
+        } catch (error) {
+          if (liveOverlaySnapshotInFlightSignatureRef.current === liveOverlaySnapshotSignature) {
+            liveOverlaySnapshotInFlightSignatureRef.current = '';
+          }
+          console.log('[Live Overlay Snapshot] captured=false source=gameplay-overlay error=', error);
+          console.log(
+            `[Live Overlay Fullscreen] fullscreen=${isFullscreen} activeSource=offscreen-live-overlay snapshotCaptured=false snapshotSkipReason=unknown overlayBitmapStillAvailable=true`,
+          );
+        }
+      };
+
+      void captureOverlay();
+    }, delayMs);
+
+    return () => {
+      cancelled = true;
+      if (liveOverlaySnapshotTimerRef.current) {
+        clearTimeout(liveOverlaySnapshotTimerRef.current);
+        liveOverlaySnapshotTimerRef.current = null;
+        if (liveOverlaySnapshotInFlightSignatureRef.current === liveOverlaySnapshotSignature) {
+          liveOverlaySnapshotInFlightSignatureRef.current = '';
+        }
+      }
+    };
+  }, [
+    liveOverlaySnapshotReady,
+    liveOverlaySnapshotLayout.width,
+    liveOverlaySnapshotLayout.height,
+    liveOverlaySnapshotSignature,
+    shouldPublishGameplayOverlaySnapshot,
+    shouldShowCaromSnapshotOverlay,
+    shouldPublishWindowsLiveOverlaySnapshot,
+    isFullscreen,
+  ]);
+
+  const renderWarmUpIndicator = (variant: 'live' | 'fullscreen') => {
+    if (!shouldShowWarmUpOverlay) {
+      return null;
+    }
+
+    const isLive = variant === 'live';
+
+    return (
+      <RNView
+        pointerEvents="none"
+        style={isLive ? styles.liveWarmUpIndicator : styles.fullscreenWarmUpIndicator}>
+        <RNText
+          allowFontScaling={false}
+          maxFontSizeMultiplier={1}
+          style={isLive ? styles.liveWarmUpTitle : styles.fullscreenWarmUpTitle}>
+          {warmUpOverlayTitleText}
+        </RNText>
+        <RNText
+          allowFontScaling={false}
+          maxFontSizeMultiplier={1}
+          style={isLive ? styles.liveWarmUpTime : styles.fullscreenWarmUpTime}>
+          {warmUpOverlayTimeText}
+        </RNText>
+      </RNView>
+    );
+  };
+
+  const renderOverlay = () => {
+    // Camera gameplay thường phải sạch: không logo APlus, watermark, scorebar hay
+    // overlay livescore đè lên video. Livestream encoder nếu cần overlay sẽ dùng
+    // renderLiveOverlaySnapshotSource ở dưới, không dùng overlay visible này.
+    return null;
+  };
+
+  const renderScoreboardOverlay = (
+    fullscreenMode = false,
+    options?: {liveOutput?: boolean},
+  ) => {
+  if (suppressReactMatchOverlayForNativeLive) {
+    return null;
+  }
+
+  const liveOutput = !!options?.liveOutput;
+  const poolBottomOffset = 0;
+  const caromBottomOffset = liveOutput
+    ? LIVE_OVERLAY_CAROM_BOTTOM
+    : undefined;
+
+  return (
+    <>
+      <PoolScoreboardOverlay
+        fullscreenMode={fullscreenMode}
+        bottomOffset={poolBottomOffset}
+        liveOutput={liveOutput}
+        liveVideoWidth={LIVE_OVERLAY_SNAPSHOT_WIDTH}
+        liveVideoHeight={LIVE_OVERLAY_SNAPSHOT_HEIGHT}
+      />
+      <CaromScoreboardOverlay
+        fullscreenMode={fullscreenMode}
+        bottomOffset={caromBottomOffset}
+        liveOutput={liveOutput}
+        liveVideoWidth={LIVE_OVERLAY_SNAPSHOT_WIDTH}
+        liveVideoHeight={LIVE_OVERLAY_SNAPSHOT_HEIGHT}
+      />
+    </>
+  );
+};
+
+  const renderCameraScoreboardOverlay = () => {
+    // Camera thường không hiện bảng điểm Pool/Carom.
+    // Fullscreen và livestream vẫn dùng renderScoreboardOverlay / PoolScoreboardOverlay riêng bên dưới.
+    return null;
+  };
+
+
+  const renderVideoBootstrap = (fullscreenMode: boolean) => (
+    useYouTubeNativePreview ? (
+      <WindowsOnlyUnusedNativeLivePreview
+        controllerRef={youtubeControllerRef}
+        mirrorControllerRef={props.cameraRef as any}
+        setIsCameraReady={handleCameraReadyChange}
+        sourceType={externalLiveLocked ? 'webcam' : effectiveSourceType}
+        cameraFacing={effectiveCameraFacing}
+        rotatePreview={!externalLiveLocked && effectiveSourceType === 'phone'}
+      />
+    ) : (
+      <Video
+        gestureDisabled
+        source={viewModel.source}
+        initialScale={viewModel.webcam?.scale}
+        initialTranslateX={viewModel.webcam?.translateX}
+        initialTranslateY={viewModel.webcam?.translateY}
+        onFullscreenPlayerDidPresent={
+          viewModel.onFullscreenPlayerDidPresent
+        }
+        onBuffer={viewModel.onBuffer}
+        onSeek={viewModel.onSeek}
+        onLoad={viewModel.onLoad}
+        onVideoTracks={viewModel.onVideoTracks}
+        onEnd={viewModel.onEnd}
+        onError={viewModel.onWebcamError}
+        loadingDisabled
+        cameraRef={props.cameraRef}
+        isPaused={props.isPaused}
+        isStarted={props.isStarted}
+        videoUri={props.videoUri}
+        webcamType={hasConfiguredIpCameraStream ? WebcamType.webcam : WebcamType.camera}
+        setIsCameraReady={handleCameraReadyChange}
+        overlayContent={
+          !fullscreenMode && effectiveCameraSource === 'external'
+            ? renderOverlay()
+            : undefined
+        }
+        cameraScaleMode={cameraScaleMode}
+        suppressCameraFallbackOverlay={true}
+        ignoreNavigationFocusLoss={fullscreenMode || props.forceFullscreen === true}
+        fullscreenMode={fullscreenMode}
+        cameraLayoutKey={`${fullscreenSourceMode}-${cameraLayoutNonce}`}
+      />
+    )
+  );
+
+  const renderCameraContent = () => {
+    if (isCameraPremiumLocked) {
+      return (
+        <RNView style={styles.cameraStageRoot}>
+          <RNView pointerEvents="none" style={styles.fallbackVisibleStage}>
+            {fullLogoPlaceholder}
+          </RNView>
+        </RNView>
+      );
+    }
+
+    debugCameraLog('[WebCam] renderCameraContent branch', {
+      refreshing: viewModel.refreshing,
+      useYouTubeNativePreview,
+      effectiveCameraSource,
+      effectiveSourceType,
+      shouldShowLogoPlaceholder,
+      shouldShowOuterLogoOverlay,
+      propsIsCameraReady: props.isCameraReady,
+      cameraVisualReady,
+      effectiveCameraReady,
+      streamUri,
+      hasStreamUri,
+      showLogoOnly,
+      finalOutputOwner: 'Video.component',
+      finalVisibleLayer: shouldRenderPreview ? 'Video.preview' : 'Video.fallback',
+      shouldRenderVideoComponent,
+      shouldRenderPreview,
+    });
+
+    if (releaseCameraPreviewForFfmpegLive) {
+      return (
+        <RNView style={styles.cameraStageRoot}>
+          <RNView pointerEvents="none" style={styles.fallbackVisibleStage}>
+            {fullLogoPlaceholder}
+          </RNView>
+        </RNView>
+      );
+    }
+
+    return (
+      <RNView style={styles.cameraStageRoot}>
+        {shouldRenderVideoComponent ? (
+          <RNView
+            pointerEvents={shouldRenderPreview ? 'auto' : 'none'}
+            style={styles.videoScaleWrap}>
+            {renderVideoBootstrap(isFullscreen)}
+            {!isFullscreen && effectiveCameraSource !== 'external' ? renderOverlay() : null}
+          </RNView>
+        ) : null}
+
+        {!shouldRenderPreview && !shouldRenderVideoComponent ? (
+          <RNView pointerEvents="none" style={styles.fallbackVisibleStage}>
+            {fullLogoPlaceholder}
+          </RNView>
+        ) : null}
+      </RNView>
+    );
+  };
+
+  const fullscreenChromeOffsets = {
+    top: Math.max(18, overlaySafeInsets.top + 8),
+    left: Math.max(18, overlaySafeInsets.left + 8),
+    right: Math.max(16, overlaySafeInsets.right + 8),
+    bottom: Math.max(24, overlaySafeInsets.bottom + 12),
+  };
+  const fullscreenZoomTrackLength = Math.max(
+    adaptive.s(128),
+    Math.min(adaptive.height * 0.26, adaptive.s(220)),
+  );
+  const fullscreenZoomRailHeight = fullscreenZoomTrackLength + adaptive.s(108);
+  const fullscreenZoomRailTop = clamp(
+    (adaptive.height - fullscreenZoomRailHeight) / 2,
+    fullscreenChromeOffsets.top + adaptive.s(54),
+    Math.max(
+      fullscreenChromeOffsets.top + adaptive.s(54),
+      adaptive.height - fullscreenChromeOffsets.bottom - fullscreenZoomRailHeight - adaptive.s(18),
+    ),
+  );
+  const fullscreenScoreboardBottom = 0;
+
+  const renderFullscreenBranding = () => null;
+
+  const renderEmbeddedChrome = () => {
+    return (
+      <Pressable style={styles.fullscreenFab} onPress={openFullscreen}>
+        <Text color={colors.white} fontSize={20}>
+          ⛶
+        </Text>
+      </Pressable>
+    );
+  };
+
+  const renderFullscreenClose = () => {
+    const closeTop = fullscreenChromeOffsets.top + adaptive.s(44);
+
+    return (
+      <Pressable
+        style={[
+          styles.closeButton,
+          {
+            top: closeTop,
+            left: fullscreenChromeOffsets.left,
+          },
+        ]}
+        onPress={closeFullscreen}>
+        <Text color={colors.white} fontSize={15}>
+          {i18n.t('txtClose')}
+        </Text>
+      </Pressable>
+    );
+  };
+
+  const renderFullscreenZoomRail = () => {
+    return (
+      <RNView
+        style={[
+          styles.zoomRailVertical,
+          !sliderZoomSupported ? styles.zoomRailVerticalUnsupported : null,
+          {
+            top: fullscreenZoomRailTop,
+            height: sliderZoomSupported ? fullscreenZoomRailHeight : adaptive.s(92),
+            right: Math.max(overlaySafeInsets.right + adaptive.s(6), adaptive.s(8)),
+          },
+        ]}>
+        {sliderZoomSupported ? (
+          <>
+            <RNView style={styles.currentZoomBadgeVertical}>
+              <Text color={colors.white} fontSize={13}>
+                {formatZoomLabel(currentZoom, zoomUnit)}
+              </Text>
+            </RNView>
+            <Text color={'rgba(255,255,255,0.82)'} fontSize={12}>
+              {formatZoomLabel(sliderMaxZoom, zoomUnit)}
+            </Text>
+            <RNView style={styles.zoomSliderVerticalWrap}>
+              <Slider
+                style={[
+                  styles.zoomSliderVertical,
+                  {width: fullscreenZoomTrackLength},
+                ]}
+                minimumValue={sliderMinZoom}
+                maximumValue={sliderMaxZoom}
+                value={clamp(currentZoom, sliderMinZoom, sliderMaxZoom)}
+                minimumTrackTintColor={'#FFFFFF'}
+                maximumTrackTintColor={'rgba(255,255,255,0.28)'}
+                thumbTintColor={'#FFFFFF'}
+                step={0}
+                onValueChange={handleZoomSliderChange}
+                onSlidingComplete={handleZoomSliderComplete}
+              />
+            </RNView>
+            <Text color={'rgba(255,255,255,0.82)'} fontSize={12}>
+              {formatZoomLabel(sliderMinZoom, zoomUnit)}
+            </Text>
+          </>
+        ) : (
+          <RNView style={styles.zoomUnsupportedBadgeVertical}>
+            <RNText style={styles.zoomUnsupportedText}>
+              {i18n.t('cameraZoomUnsupported')}
+            </RNText>
+          </RNView>
+        )}
+      </RNView>
+    );
+  };
+
+  useEffect(() => {
+    const rawMode = String(props.gameSettings?.mode?.mode || 'unknown');
+    const mode = rawMode === 'quick_match'
+      ? 'fastCompetition'
+      : rawMode === 'pro'
+        ? 'competition'
+        : rawMode === 'fast'
+          ? 'quick'
+          : rawMode;
+
+    if (!props.forceFullscreen) {
+      console.log(
+        `[VideoOverlay] screen=gameplayCamera mode=${mode} showSponsorLogo=false showLogo=false showWatermark=false showScore=false showLive=false`,
+      );
+      return;
+    }
+
+    console.log(
+      '[VideoOverlay] screen=fullscreenCamera showSponsorLogo=false showLogo=false showWatermark=false showScore=false showLive=false showControls=true',
+    );
+  }, [props.forceFullscreen, props.gameSettings?.mode?.mode]);
+
+  const renderFullscreenHud = () => {
+    return (
+      <RNView pointerEvents="box-none" style={styles.fullscreenHud}>
+        {renderFullscreenClose()}
+        {renderFullscreenZoomRail()}
+      </RNView>
+    );
+  };
+
+  const renderLiveOverlaySnapshotSource = () => {
+    if (isCameraPremiumLocked) {
+      return null;
+    }
+
+    if (
+      !ENABLE_YOUTUBE_OVERLAY_SNAPSHOT_CAPTURE ||
+      !shouldPublishWindowsLiveOverlaySnapshot ||
+      (!shouldShowPoolSnapshotOverlay && !shouldShowCaromSnapshotOverlay)
+    ) {
+      return null;
+    }
+
+    return (
+      <RNView
+        ref={liveOverlaySnapshotRef}
+        collapsable={false}
+        pointerEvents="none"
+        style={styles.liveOverlaySnapshotSource}
+        onLayout={event => {
+          const {width, height} = event.nativeEvent.layout;
+          setLiveOverlaySnapshotLayout(prev => {
+            if (prev.width === width && prev.height === height) {
+              return prev;
+            }
+            console.log(
+              `[Live Overlay] desiredSource=gameplay-shared-overlay mounted=${width > 0 && height > 0} size=${width}x${height} snapshotEnabled=true`,
+            );
+            console.log(
+              `[Live Overlay Fullscreen] fullscreen=${isFullscreen} activeSource=offscreen-live-overlay mounted=${width > 0 && height > 0} layout=${width}x${height}`,
+            );
+            return {width, height};
+          });
+        }}>
+        {renderWarmUpIndicator('live')}
+        {renderScoreboardOverlay(false, {liveOutput: true})}
+      </RNView>
+    );
+  };
+
+  const renderCameraView = (fullscreenMode: boolean) => {
+    if (isCameraPremiumLocked) {
+      return (
+        <RNView collapsable={false} style={fullscreenMode ? styles.fullscreenVideoClip : styles.videoClip}>
+          {renderCameraContent()}
+        </RNView>
+      );
+    }
+
+    return (
+      <RNView
+        collapsable={false}
+        style={fullscreenMode ? styles.fullscreenVideoClip : styles.videoClip}
+        onLayout={event => {
+          const {width, height} = event.nativeEvent.layout;
+          const roundedWidth = Math.round(width);
+          const roundedHeight = Math.round(height);
+
+          if (fullscreenMode) {
+            const key = `preview:${roundedWidth}x${roundedHeight}:${fullscreenSourceMode}`;
+            if (lastFullscreenLayoutLogRef.current !== key) {
+              lastFullscreenLayoutLogRef.current = key;
+              console.log(`[FullscreenCamera] preview-layout width=${roundedWidth} height=${roundedHeight}`);
+              setCameraLayoutNonce(prev => prev + 1);
+            }
+          }
+
+          if (!shouldShowLogoPlaceholder) {
+            return;
+          }
+
+          debugCameraLog('[WebCam] placeholder surface layout', event.nativeEvent.layout);
+        }}>
+        {renderCameraContent()}
+        {!fullscreenMode ? renderCameraScoreboardOverlay() : null}
+        {shouldShowOuterLogoOverlay ? (
+          <RNView
+            pointerEvents="none"
+            style={styles.logoOnlyOverlayLogProbe}
+            onLayout={() => {
+              debugCameraLog('[WebCam] outer logo overlay loaded', {
+                source: effectiveCameraSource,
+                type: effectiveSourceType,
+                effectiveCameraReady,
+                shouldShowOuterLogoOverlay,
+              });
+            }}
+          />
+        ) : null}
+        {!fullscreenMode && shouldShowFullscreenFab ? renderEmbeddedChrome() : null}
+      </RNView>
+    );
+  };
+
+  const content = (
+    <RNView
+      style={[styles.embeddedRoot, props.forceFullscreen ? styles.fullscreenRoot : null]}
+      pointerEvents="box-none">
+      {renderLiveOverlaySnapshotSource()}
+      <RNView
+        style={[styles.videoStageSlot, props.forceFullscreen ? styles.fullscreenStageSlot : null]}
+        pointerEvents="box-none"
+        onLayout={event => {
+          const {width: nextWidth, height: nextHeight} = event.nativeEvent.layout;
+          const roundedWidth = Math.round(nextWidth);
+          const roundedHeight = Math.round(nextHeight);
+
+          if (props.forceFullscreen) {
+            console.log(`[FullscreenCamera] layout width=${roundedWidth} height=${roundedHeight}`);
+          }
+
+          setCameraStageBounds(prev => {
+            if (prev.width === nextWidth && prev.height === nextHeight) {
+              return prev;
+            }
+
+            if (props.forceFullscreen) {
+              setCameraLayoutNonce(value => value + 1);
+            }
+
+            return {width: nextWidth, height: nextHeight};
+          });
+        }}>
+        <RNView
+          collapsable={false}
+          style={[
+            styles.videoHost,
+            styles.videoStageFill,
+            props.forceFullscreen ? styles.fullscreenVideoHost : null,
+          ]}
+          pointerEvents="box-none">
+          {renderCameraView(!!props.forceFullscreen)}
+
+          {props.innerControls && !shouldShowLogoPlaceholder && !props.forceFullscreen ? (
+            <Pressable
+              style={styles.overlayTouch}
+              pointerEvents="box-only"
+              onPress={viewModel.onToggleInnerControls}
+            />
+          ) : null}
+        </RNView>
+      </RNView>
+
+      {props.forceFullscreen && !isCameraPremiumLocked ? renderFullscreenHud() : null}
+
+      {showBottomControls && !shouldShowLogoPlaceholder && !props.forceFullscreen ? (
+        <RNView style={styles.bottomBar} pointerEvents="box-none">
+          <Pressable
+            onPress={() => {
+              if (!allowRefresh) {
+                return;
+              }
+              viewModel.onRefresh();
+            }}
+            style={[
+              styles.actionButton,
+              !allowRefresh && styles.actionButtonDisabled,
+            ]}>
+            <Text color={colors.white} fontSize={14}>↻ {i18n.t('refresh')}</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => {
+              if (!allowSwitchCamera) {
+                return;
+              }
+              onSwitchCameraPress();
+            }}
+            style={[
+              styles.actionButton,
+              styles.switchButton,
+              !allowSwitchCamera && styles.actionButtonDisabled,
+            ]}>
+            <Text color={colors.white} fontSize={14}>⇄ {i18n.t('switchCamera')}</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={viewModel.onReWatch}
+            disabled={!canRewatch}
+            style={[
+              styles.actionButton,
+              !canRewatch && styles.actionButtonDisabled,
+            ]}>
+            <Text color={colors.white} fontSize={14}>
+              ▶ {i18n.t('reWatch')}
+            </Text>
+          </Pressable>
+        </RNView>
+      ) : null}
+    </RNView>
+  );
+
+  return content;
+});
+
+const createStyles = (adaptive: any, design: any, rules: any, safeInsets: any) => createGameplayStyles(adaptive, {
+  embeddedRoot: {
+    flex: 1,
+    width: '100%',
+    minHeight: 0,
+    alignSelf: 'stretch',
+    marginTop: 0,
+    backgroundColor: colors.black,
+  },
+
+  videoStageSlot: {
+    flex: 1,
+    minHeight: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.black,
+    position: 'relative',
+    zIndex: 10,
+    elevation: 10,
+  },
+
+  fullscreenStageSlot: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    width: '100%',
+    height: '100%',
+    minWidth: 0,
+    minHeight: 0,
+    margin: 0,
+    padding: 0,
+    alignSelf: 'stretch',
+    alignItems: 'stretch',
+    justifyContent: 'flex-start',
+  },
+
+  fullscreenModalRoot: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    margin: 0,
+    padding: 0,
+    backgroundColor: '#000',
+    overflow: 'hidden',
+  },
+
+  fullscreenRoot: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    minWidth: 0,
+    minHeight: 0,
+    margin: 0,
+    padding: 0,
+    backgroundColor: '#000',
+    alignSelf: 'stretch',
+    alignItems: 'stretch',
+    justifyContent: 'flex-start',
+    overflow: 'hidden',
+  },
+
+  videoHost: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+
+  videoStage: {
+    maxWidth: '100%',
+    maxHeight: '100%',
+    alignSelf: 'center',
+    flexGrow: 0,
+    flexShrink: 0,
+  },
+
+  videoStageFill: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    alignSelf: 'stretch',
+    minHeight: 0,
+  },
+
+  fullscreenVideoHost: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    minWidth: 0,
+    minHeight: 0,
+    margin: 0,
+    padding: 0,
+    alignSelf: 'stretch',
+    backgroundColor: '#000',
+    overflow: 'hidden',
+  },
+
+  placeholderStageHost: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    alignSelf: 'stretch',
+    minHeight: adaptive.s(96),
+  },
+
+  videoClipPlaceholder: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    minHeight: adaptive.s(96),
+    backgroundColor: '#000',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  fullscreenVideoClipPlaceholder: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  videoClip: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    minWidth: 0,
+    minHeight: 0,
+    alignSelf: 'stretch',
+    backgroundColor: '#000',
+    overflow: 'hidden',
+  },
+
+  fullscreenVideoClip: {
+    ...StyleSheet.absoluteFillObject,
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    minWidth: 0,
+    minHeight: 0,
+    alignSelf: 'stretch',
+    backgroundColor: '#000',
+    overflow: 'hidden',
+  },
+
+  cameraStageRoot: {
+    ...StyleSheet.absoluteFillObject,
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    minWidth: 0,
+    minHeight: 0,
+    alignSelf: 'stretch',
+    backgroundColor: '#000',
+    overflow: 'hidden',
+  },
+
+  videoScaleWrap: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
+  },
+
+  videoScaleWrapHidden: {
+    opacity: 1,
+  },
+
+  background: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  fallbackVisibleStage: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
+  },
+
+  logoOnlyBackground: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+  },
+
+  logoOnlyImage: {
+    width: '62%',
+    height: '32%',
+    alignSelf: 'center',
+  },
+
+  logoOnlyOverlayLogProbe: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: 1,
+    height: 1,
+    opacity: 0,
+  },
+
+  fullWidth: {
+    width: '100%',
+  },
+
+  liveOverlaySnapshotSource: {
+    position: 'absolute',
+    // v59: keep the React fullscreen overlay snapshot source INSIDE the visible
+    // XAML tree. RenderTargetBitmap on RNW can return blank/empty when the target
+    // view is parked far offscreen or behind a negative z-index. The camera stage
+    // is rendered above this hidden source, so users do not see a duplicate overlay,
+    // but native capture can still render the exact React fullscreen overlay.
+    left: 0,
+    top: 0,
+    width: LIVE_OVERLAY_SNAPSHOT_WIDTH,
+    height: LIVE_OVERLAY_SNAPSHOT_HEIGHT,
+    backgroundColor: 'transparent',
+    overflow: 'hidden',
+    zIndex: 0,
+    elevation: 0,
+  },
+
+  liveWarmUpIndicator: {
+    position: 'absolute',
+    left: LIVE_OVERLAY_LOGO_MARGIN_X,
+    top: LIVE_OVERLAY_LOGO_MARGIN_TOP + LIVE_OVERLAY_LOGO_HEIGHT - 2,
+    width: LIVE_OVERLAY_LOGO_WIDTH,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    zIndex: 52,
+    elevation: 52,
+  },
+
+  liveWarmUpTitle: {
+    color: '#FFE600',
+    fontSize: 30,
+    lineHeight: 34,
+    fontWeight: '900',
+    textAlign: 'center',
+    includeFontPadding: false,
+    textShadowColor: 'rgba(0,0,0,0.82)',
+    textShadowOffset: {width: 0, height: 2},
+    textShadowRadius: 4,
+  },
+
+  liveWarmUpTime: {
+    color: '#FFE600',
+    fontSize: 34,
+    lineHeight: 38,
+    fontWeight: '900',
+    textAlign: 'center',
+    includeFontPadding: false,
+    textShadowColor: 'rgba(0,0,0,0.82)',
+    textShadowOffset: {width: 0, height: 2},
+    textShadowRadius: 4,
+  },
+
+  fullscreenWarmUpIndicator: {
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    width: adaptive.s(150),
+    marginTop: adaptive.s(2),
+  },
+
+  fullscreenWarmUpTitle: {
+    color: '#FFE600',
+    fontSize: adaptive.s(18),
+    lineHeight: adaptive.s(22),
+    fontWeight: '900',
+    textAlign: 'center',
+    includeFontPadding: false,
+    textShadowColor: 'rgba(0,0,0,0.82)',
+    textShadowOffset: {width: 0, height: 1},
+    textShadowRadius: 3,
+  },
+
+  fullscreenWarmUpTime: {
+    color: '#FFE600',
+    fontSize: adaptive.s(20),
+    lineHeight: adaptive.s(24),
+    fontWeight: '900',
+    textAlign: 'center',
+    includeFontPadding: false,
+    textShadowColor: 'rgba(0,0,0,0.82)',
+    textShadowOffset: {width: 0, height: 1},
+    textShadowRadius: 3,
+  },
+
+  fullscreenHud: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
+    elevation: 9999,
+    pointerEvents: 'box-none',
+  },
+
+  fullscreenScoreboardWrap: {
+    position: 'absolute',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    zIndex: 10000,
+    elevation: 10000,
+  },
+
+  fullscreenBrandWrap: {
+    position: 'absolute',
+    zIndex: 10001,
+    elevation: 10001,
+    pointerEvents: 'none',
+    backgroundColor: 'transparent',
+    borderRadius: 0,
+    borderWidth: 0,
+    borderColor: 'transparent',
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    margin: 0,
+    shadowOpacity: 0,
+  },
+
+  fullscreenBrandImage: {
+    width: adaptive.s(126),
+    height: adaptive.s(42),
+    tintColor: '#FFFFFF',
+  },
+
+  fullscreenFab: {
+    position: 'absolute',
+    top: Math.max(10, rules.camera.overlayInset),
+    right: Math.max(10, rules.camera.overlayInset),
+    width: adaptive.s(42),
+    height: adaptive.s(42),
+    borderRadius: adaptive.s(21),
+    backgroundColor: 'rgba(0,0,0,0.76)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 60,
+    elevation: 60,
+  },
+
+  closeButton: {
+    position: 'absolute',
+    top: Math.max(rules.camera.overlayInset + safeInsets.top, adaptive.s(18)),
+    left: Math.max(rules.camera.overlayInset + safeInsets.left, adaptive.s(18)),
+    paddingHorizontal: adaptive.s(16),
+    paddingVertical: adaptive.s(10),
+    borderRadius: adaptive.s(22),
+    backgroundColor: 'rgba(0,0,0,0.88)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
+    zIndex: 10002,
+    elevation: 10002,
+  },
+
+  zoomRail: {
+    position: 'absolute',
+    left: Math.max(rules.camera.overlayInset + safeInsets.left, adaptive.s(18)),
+    right: Math.max(rules.camera.overlayInset + safeInsets.right, adaptive.s(18)),
+    bottom: Math.max(safeInsets.bottom + adaptive.s(24), adaptive.s(24)),
+    minHeight: adaptive.s(84),
+    borderRadius: adaptive.s(22),
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    paddingHorizontal: adaptive.s(16),
+    paddingVertical: adaptive.s(12),
+    justifyContent: 'center',
+    zIndex: 42,
+    elevation: 42,
+  },
+
+  zoomRailVertical: {
+    position: 'absolute',
+    width: adaptive.s(56),
+    borderRadius: adaptive.s(28),
+    backgroundColor: 'rgba(0,0,0,0.82)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.26)',
+    paddingVertical: adaptive.s(14),
+    paddingHorizontal: adaptive.s(6),
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    zIndex: 10003,
+    elevation: 10003,
+  },
+
+  zoomRailVerticalUnsupported: {
+    width: adaptive.s(148),
+    borderRadius: adaptive.s(18),
+    paddingVertical: adaptive.s(10),
+    paddingHorizontal: adaptive.s(10),
+    justifyContent: 'center',
+  },
+
+  zoomSliderVerticalWrap: {
+    flex: 1,
+    width: adaptive.s(40),
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: adaptive.s(160),
+  },
+
+  zoomSliderVertical: {
+    height: adaptive.s(40),
+    transform: [{rotate: '-90deg'}],
+  },
+
+  currentZoomBadgeVertical: {
+    minWidth: adaptive.s(44),
+    paddingVertical: adaptive.s(6),
+    paddingHorizontal: adaptive.s(6),
+    borderRadius: rules.camera.cardRadius,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    marginBottom: adaptive.s(8),
+  },
+
+  zoomUnsupportedBadgeVertical: {
+    paddingVertical: adaptive.s(8),
+    paddingHorizontal: adaptive.s(6),
+    borderRadius: rules.camera.cardRadius,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  zoomUnsupportedText: {
+    color: colors.white,
+    fontSize: adaptive.s(12),
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+
+  zoomHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginBottom: 8,
+  },
+
+  zoomSlider: {
+    width: '100%',
+    height: 36,
+  },
+
+  zoomRangeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+
+  currentZoomBadge: {
+    minWidth: 44,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    borderRadius: rules.camera.cardRadius,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+  },
+
+  zoomUnsupportedBadge: {
+    width: 44,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    borderRadius: rules.camera.cardRadius,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    alignItems: 'center',
+  },
+
+  zoomStepButton: {
+    minWidth: 38,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    borderRadius: rules.camera.cardRadius,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    alignItems: 'center',
+  },
+
+  zoomStepButtonActive: {
+    backgroundColor: '#ffffff',
+  },
+
+  bottomBar: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingTop: 10,
+    position: 'relative',
+    zIndex: 50,
+    elevation: 50,
+  },
+
+  actionButton: {
+    flex: 1,
+    minHeight: rules.controlHeights.compact,
+    borderRadius: design.radius.md,
+    backgroundColor: '#1f1f1f',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+
+  switchButton: {
+    backgroundColor: '#9d1010',
+  },
+
+  actionButtonDisabled: {
+    opacity: 0.45,
+  },
+
+  overlayTouch: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+  },
+});
+
+export default memo(WebCam);

@@ -1,0 +1,35 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+    includeBuild("../node_modules/@react-native/gradle-plugin")
+}
+
+plugins { id("com.facebook.react.settings") }
+
+extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
+    ex.autolinkLibrariesFromCommand()
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+    google()
+
+    maven { url 'https://repo1.maven.org/maven2' }
+
+    mavenCentral()
+
+    maven { url 'https://jitpack.io' }
+
+    maven { url "https://raw.githubusercontent.com/jitsi/jitsi-maven-repository/master/releases" }
+
+}
+}
+
+rootProject.name = "aplus-score-android"
+include(":app")
+
+includeBuild("../node_modules/@react-native/gradle-plugin")

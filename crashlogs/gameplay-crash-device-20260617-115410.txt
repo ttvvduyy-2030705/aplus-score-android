@@ -1,0 +1,3 @@
+﻿List of devices attached
+adb-H7N3Y72GEGO35ZTI04Q-nKgNTq._adb-tls-connect._tcp	device
+

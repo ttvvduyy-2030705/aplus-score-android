@@ -1,0 +1,4 @@
+#Wed Jul 01 09:57:49 ICT 2026
+base.0=C\:\\project\\aplus-score-android\\android\\app\\build\\intermediates\\dex\\release\\minifyReleaseWithR8\\classes.dex
+renamed.0=classes.dex
+path.0=classes.dex

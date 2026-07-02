@@ -1,0 +1,29 @@
+﻿===== PID =====
+
+===== DUMPSYS ACTIVITY PROCESSES FILTER =====
+      PID #10547: ProcessRecord{68c86a8 10547:com.google.process.gservices/u0a90}
+      PID #10579: ProcessRecord{e939a87 10579:com.google.android.gms.unstable/u0a90}
+      PID #10729: ProcessRecord{e191517 10729:com.google.android.gms/u0a90}
+  
+    Time since processes crashed:
+>     Process com.aplusscore.android uid 10174: last crashed +12s880ms ago
+  
+    First time processes crashed and counts:
+>     Process com.aplusscore.android uid 10174: first crashed +12s880ms ago; crashes since then: 1
+  
+    mHomeProcess: ProcessRecord{a1bb978 1363:com.android.launcher3/u0a113}
+    mPreviousProcessVisibleTime: +2h16m7s464ms
+    mGlobalConfiguration: {1.0 ?mcc?mnc [vi_VN,en_US] ldltr sw617dp w1097dp h545dp 280dpi lrg long land finger -keyb/v/h -nav/h winConfig={ mBounds=Rect(0, 0 - 1920, 1080) mAppBounds=Rect(0, 0 - 1920, 996) mMaxBounds=Rect(0, 0 - 1920, 1080) mWindowingMode=fullscreen mDisplayWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_270} s.53 fontWeightAdjustment=0}
+    Display override configurations:
+      0: {1.0 ?mcc?mnc [vi_VN,en_US] ldltr sw617dp w1097dp h545dp 280dpi lrg long land finger -keyb/v/h -nav/h winConfig={ mBounds=Rect(0, 0 - 1920, 1080) mAppBounds=Rect(0, 0 - 1920, 996) mMaxBounds=Rect(0, 0 - 1920, 1080) mWindowingMode=fullscreen mDisplayWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_270} s.53 fontWeightAdjustment=0}
+    mConfigWillChange: false
+    mWakefulness=Awake
+
+===== DUMPSYS PACKAGE =====
+    pkg=Package{41d63c2 com.aplusscore.android}
+    codePath=/data/app/~~Qa4gAcBZxHBoSa8yqGocgA==/com.aplusscore.android-FDd86PUFtUba-1pGXwENjQ==
+    legacyNativeLibraryDir=/data/app/~~Qa4gAcBZxHBoSa8yqGocgA==/com.aplusscore.android-FDd86PUFtUba-1pGXwENjQ==/lib
+    versionCode=1 minSdk=26 targetSdk=35
+    versionName=1.0.0
+    firstInstallTime=2026-06-17 11:38:40
+    lastUpdateTime=2026-06-17 11:38:40

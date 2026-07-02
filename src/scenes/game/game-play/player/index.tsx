@@ -1,0 +1,2225 @@
+import React, {memo, useCallback, useContext, useMemo, useState} from 'react';
+import {
+  StyleSheet,
+  TextInput,
+  Text as RNText,
+  Image as RNImage,
+  LayoutChangeEvent,
+} from 'react-native';
+
+import View from 'components/View';
+import Button from 'components/Button';
+import images from 'assets';
+import i18n from 'i18n';
+import {BALLS_15} from 'constants/balls';
+import {SNOOKER_BALL_SCORES, SNOOKER_FOUL_SCORES} from 'constants/snooker';
+import {BallType} from 'types/ball';
+import {isPool15FreeGame, isPool15Game, isPool15OnlyGame, isPoolGame, isSnookerGame} from 'utils/game';
+
+import PlayerViewModel, {Props} from './PlayerViewModel';
+import {getCountryFlagImageUri} from '../../settings/player/countries';
+import useDesignSystem from 'theme/useDesignSystem';
+import {createGameplayLayoutRules, createGameplayStyles} from '../layoutRules';
+import Pool8BlackBall from '../pool8BlackBall';
+import {LanguageContext} from 'context/language';
+
+const isEnglish = () => {
+  const locale = String(
+    (i18n as any)?.locale || (i18n as any)?.language || '',
+  ).toLowerCase();
+  return locale.startsWith('en');
+};
+
+const tr = (vi: string, en: string) => (isEnglish() ? en : vi);
+
+const isRemoteUri = (value?: string) =>
+  /^https?:\/\//i.test(String(value || '').trim()) ||
+  /^file:\/\//i.test(String(value || '').trim());
+
+const getPlayerFlagImageUri = (player?: {countryCode?: string; flag?: string}) => {
+  const fromCode = getCountryFlagImageUri(player?.countryCode, 160);
+  if (fromCode) {
+    return fromCode;
+  }
+
+  const rawFlag = String(player?.flag || '').trim();
+  return isRemoteUri(rawFlag) ? rawFlag : '';
+};
+
+const getPlayerFlagText = (player?: {flag?: string}) => {
+  const rawFlag = String(player?.flag || '').trim();
+  return isRemoteUri(rawFlag) ? '' : rawFlag;
+};
+
+const isLightColor = (value?: string) => {
+  const raw = String(value || '').trim().toLowerCase();
+
+  if (!raw) {
+    return false;
+  }
+
+  if (raw === 'white' || raw === '#fff' || raw === '#ffffff') {
+    return true;
+  }
+
+  const hex = raw.replace('#', '');
+  if (/^[0-9a-f]{3}$/i.test(hex)) {
+    const r = parseInt(hex[0] + hex[0], 16);
+    const g = parseInt(hex[1] + hex[1], 16);
+    const b = parseInt(hex[2] + hex[2], 16);
+    return (r * 299 + g * 587 + b * 114) / 1000 >= 186;
+  }
+
+  if (/^[0-9a-f]{6}$/i.test(hex)) {
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000 >= 186;
+  }
+
+  const rgbMatch = raw.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+  if (rgbMatch) {
+    const r = Number(rgbMatch[1]);
+    const g = Number(rgbMatch[2]);
+    const b = Number(rgbMatch[3]);
+    return (r * 299 + g * 587 + b * 114) / 1000 >= 186;
+  }
+
+  return false;
+};
+
+const GamePlayer = (
+  props: Props & {
+    layout?: 'default' | 'poolArena';
+    compact?: boolean;
+    showPool8Tracker?: boolean;
+    pool8Tracker?: {sequence: BallType[]; activeIndex: number};
+    onPressPool8Ball?: (playerIndex: number) => void;
+  },
+) => {
+  const {language} = useContext(LanguageContext);
+  void language;
+  const viewModel = PlayerViewModel(props);
+  const isPoolMode = isPoolGame(props.gameSettings?.category);
+  const isSnookerMode = isSnookerGame(props.gameSettings?.category);
+  const isPool15Mode = isPool15Game(props.gameSettings?.category);
+  const isPool15OnlyMode = isPool15OnlyGame(props.gameSettings?.category);
+  const isPool15FreeMode = isPool15FreeGame(props.gameSettings?.category);
+  const isActiveCard = !!props.isOnTurn;
+
+  const {adaptive, design} = useDesignSystem();
+  const layoutRules = useMemo(() => createGameplayLayoutRules(adaptive, design), [adaptive.styleKey]);
+  const styles = useMemo(() => createStyles(adaptive, design, layoutRules), [adaptive.styleKey]);
+  const totalPlayers = props.totalPlayers || 2;
+  const isLargeDisplay = adaptive.layoutPreset === 'tv';
+  const isWideLandscape =
+    adaptive.isLandscape &&
+    (adaptive.layoutPreset === 'wideTablet' ||
+      (adaptive.layoutPreset === 'tv' && adaptive.aspectRatio >= 1.5));
+  const isHandheldLandscape =
+    adaptive.isLandscape && adaptive.systemMetrics.smallestScreenWidthDp < 600;
+  const isCompactLandscape =
+    adaptive.isLandscape &&
+    (adaptive.height <= 720 || adaptive.aspectRatio >= 1.65 || adaptive.widthClass === 'compact');
+  const useForcedCompact =
+    isCompactLandscape ||
+    adaptive.shortSide < 430 ||
+    (adaptive.isLandscape && adaptive.height <= 700);
+
+  const isCompactLayout = Boolean(
+    props.compact || useForcedCompact || totalPlayers > 2,
+  );
+  const isMediumResponsiveLayout =
+    !isCompactLayout && isWideLandscape && totalPlayers <= 2;
+
+  const isPhoneLandscapeTwoPlayer =
+    adaptive.isLandscape &&
+    adaptive.height <= 700 &&
+    totalPlayers <= 2;
+
+  const isExtraCompactLayout =
+    totalPlayers >= 4 ||
+    adaptive.shortSide <= 430 ||
+    (adaptive.isLandscape && adaptive.height <= 620);
+
+  const uiScale = useMemo(() => {
+    if (isLargeDisplay) {
+      return 1;
+    }
+
+    const shortPenalty = adaptive.isLandscape
+      ? Math.max(0, Math.min(0.24, (720 - adaptive.height) / 260))
+      : 0;
+    const ratioPenalty = adaptive.isLandscape
+      ? Math.max(0, Math.min(0.08, (adaptive.aspectRatio - 1.65) * 0.08))
+      : 0;
+
+    return Math.max(isHandheldLandscape ? 0.5 : 0.62, Math.min(1, adaptive.textScale - shortPenalty - ratioPenalty));
+  }, [adaptive.aspectRatio, adaptive.height, adaptive.isLandscape, adaptive.textScale, isLargeDisplay]);
+
+  const isCaromMode = !isPoolMode && !isSnookerMode;
+  const isLibreMode = props.gameSettings?.category === 'libre';
+  const totalPointValue = Number(props.player.totalPoint || 0);
+  const snookerSetScore = Math.max(
+    0,
+    Math.round(
+      Number(
+        (props.player as any)?.snooker?.setScore ??
+          (props.player as any)?.setScore ??
+          (props.player as any)?.frameScore ??
+          0,
+      ),
+    ),
+  );
+  const rawPlayerColor = String((props.player as any)?.color || '').trim();
+  const useColoredPanel = Boolean(rawPlayerColor) && isCaromMode;
+  const playerPanelColor = useColoredPanel ? rawPlayerColor : '#000000';
+  const isLightPlayerPanel = useColoredPanel && isLightColor(playerPanelColor);
+  const primaryTextColor = useColoredPanel
+    ? isLightPlayerPanel
+      ? '#111111'
+      : '#FFFFFF'
+    : '#FFFFFF';
+  const secondaryTextColor = useColoredPanel
+    ? isLightPlayerPanel
+      ? 'rgba(17,17,17,0.72)'
+      : 'rgba(255,255,255,0.82)'
+    : '#FFFFFF';
+  const inactiveTextColor = useColoredPanel
+    ? isLightPlayerPanel
+      ? 'rgba(17,17,17,0.52)'
+      : 'rgba(255,255,255,0.58)'
+    : '#8B8D95';
+
+  const panelDynamicStyle = useColoredPanel
+    ? {backgroundColor: playerPanelColor, borderColor: isLightPlayerPanel ? 'rgba(17,17,17,0.28)' : 'rgba(255,255,255,0.18)'}
+    : {backgroundColor: '#000000', borderColor: '#FF1818'};
+
+  const addTimeButtonDynamicStyle = isLightPlayerPanel
+    ? {
+        borderColor: 'rgba(17,17,17,0.9)',
+        backgroundColor: 'rgba(255,255,255,0.96)',
+        shadowColor: '#000000',
+        shadowOpacity: 0.22,
+        shadowRadius: 5,
+        shadowOffset: {width: 0, height: 1},
+        elevation: 5,
+      }
+    : undefined;
+  const addTimeIconDynamicStyle = isLightPlayerPanel
+    ? {tintColor: '#111111'}
+    : undefined;
+
+  const textColorStyle = {color: primaryTextColor};
+  const editingNameTextStyle = {color: '#111111'};
+  const editingNamePlaceholderColor = 'rgba(17,17,17,0.55)';
+
+  const isMultiPlayerLayout = totalPlayers > 2;
+  const hasScoredBalls = Boolean((props.player.scoredBalls || []).length > 0);
+  const isFourPlayerScoreLayout = totalPlayers >= 4;
+  const isCaromThreePlayerCompactCard =
+    isCaromMode && totalPlayers === 3 && props.index > 0;
+
+  const scoreLayerDynamicStyle = isMultiPlayerLayout
+    ? isCaromMode
+      ? isCaromThreePlayerCompactCard
+        ? styles.scoreLayerCaromThreePlayerCompact
+        : isFourPlayerScoreLayout
+        ? styles.scoreLayerCaromFourPlayer
+        : styles.scoreLayerCaromThreePlayer
+      : isFourPlayerScoreLayout
+      ? styles.scoreLayerPoolFourPlayer
+      : styles.scoreLayerPoolThreePlayer
+    : isCaromMode
+    ? isPhoneLandscapeTwoPlayer
+      ? styles.scoreLayerCaromPhoneLandscape
+      : isExtraCompactLayout
+      ? styles.scoreLayerCaromExtraCompact
+      : isCompactLayout
+      ? styles.scoreLayerCaromCompact
+      : styles.scoreLayerCarom
+    : isPhoneLandscapeTwoPlayer
+    ? styles.scoreLayerPhoneLandscape
+    : isExtraCompactLayout
+    ? styles.scoreLayerExtraCompact
+    : isCompactLayout
+    ? styles.scoreLayerCompact
+    : undefined;
+
+  const scoreTextDynamicStyle = isMultiPlayerLayout
+    ? isCaromMode
+      ? isCaromThreePlayerCompactCard
+        ? styles.scoreTextCaromThreePlayerCompact
+        : isFourPlayerScoreLayout
+        ? styles.scoreTextCaromFourPlayer
+        : styles.scoreTextCaromThreePlayer
+      : isFourPlayerScoreLayout
+      ? styles.scoreTextPoolFourPlayer
+      : styles.scoreTextPoolThreePlayer
+    : isCaromMode
+    ? isPhoneLandscapeTwoPlayer
+      ? styles.scoreTextCaromPhoneLandscape
+      : isExtraCompactLayout
+      ? styles.scoreTextCaromExtraCompact
+      : isCompactLayout
+      ? styles.scoreTextCaromCompact
+      : styles.scoreTextCarom
+    : isPhoneLandscapeTwoPlayer
+    ? styles.scoreTextPhoneLandscape
+    : isExtraCompactLayout
+    ? styles.scoreTextExtraCompact
+    : isCompactLayout
+    ? styles.scoreTextCompact
+    : undefined;
+
+  const libreScoreTextStyle = useMemo(() => {
+    if (!isLibreMode || totalPointValue < 100) {
+      return undefined;
+    }
+
+    if (isPhoneLandscapeTwoPlayer) {
+      return totalPointValue >= 1000
+        ? styles.scoreTextLibre4DigitsPhoneLandscape
+        : styles.scoreTextLibre3DigitsPhoneLandscape;
+    }
+
+    if (isExtraCompactLayout) {
+      return totalPointValue >= 1000
+        ? styles.scoreTextLibre4DigitsExtraCompact
+        : styles.scoreTextLibre3DigitsExtraCompact;
+    }
+
+    if (isCompactLayout) {
+      return totalPointValue >= 1000
+        ? styles.scoreTextLibre4DigitsCompact
+        : styles.scoreTextLibre3DigitsCompact;
+    }
+
+    return totalPointValue >= 1000
+      ? styles.scoreTextLibre4Digits
+      : styles.scoreTextLibre3Digits;
+  }, [
+    isLibreMode,
+    totalPointValue,
+    isPhoneLandscapeTwoPlayer,
+    isExtraCompactLayout,
+    isCompactLayout,
+  ]);
+
+  const extraTimeTurns = Math.max(
+    0,
+    Number((props.player as any)?.proMode?.extraTimeTurns ?? 0),
+  );
+
+  const showAddTime =
+    !isSnookerMode && extraTimeTurns > 0 && (!isPool15Mode || isPool15OnlyMode);
+
+  const [panelSize, setPanelSize] = useState({width: 0, height: 0});
+  const onPanelLayout = useCallback((event: LayoutChangeEvent) => {
+    const nextWidth = Math.round(Number(event?.nativeEvent?.layout?.width || 0));
+    const nextHeight = Math.round(Number(event?.nativeEvent?.layout?.height || 0));
+
+    if (nextWidth <= 0 || nextHeight <= 0) {
+      return;
+    }
+
+    setPanelSize(previous => {
+      if (
+        Math.abs(previous.width - nextWidth) <= 1 &&
+        Math.abs(previous.height - nextHeight) <= 1
+      ) {
+        return previous;
+      }
+
+      return {width: nextWidth, height: nextHeight};
+    });
+  }, []);
+
+  const addTimeButtons = useMemo(() => {
+    return Array.from({length: extraTimeTurns}, (_, index) => index);
+  }, [extraTimeTurns]);
+
+  const poolBallMap = useMemo(() => {
+    return BALLS_15.reduce<Record<string, any>>((result, ball) => {
+      result[String(ball.number)] = ball;
+      return result;
+    }, {});
+  }, []);
+
+  const showPool8Tracker = Boolean(
+    isPool15OnlyMode && props.showPool8Tracker && props.pool8Tracker?.sequence?.length,
+  );
+
+  const pool8CurrentTrackerBall = useMemo(() => {
+    if (!showPool8Tracker) {
+      return undefined;
+    }
+
+    const activeIndex = Number(props.pool8Tracker?.activeIndex || 0);
+    const number = props.pool8Tracker?.sequence?.[activeIndex];
+    if (number == null) {
+      return undefined;
+    }
+
+    return {
+      index: activeIndex,
+      number,
+      ball: poolBallMap[String(number)],
+    };
+  }, [poolBallMap, props.pool8Tracker, showPool8Tracker]);
+
+  const playerFlag = getPlayerFlagText(props.player as any);
+  const playerFlagImage = getPlayerFlagImageUri(props.player as any);
+
+  const fluidScale = Math.max(isHandheldLandscape ? 0.54 : 0.64, Math.min(1, uiScale));
+  const playerNameFontSize = Math.round(adaptive.fs(42, 0.72, 1.02) * uiScale);
+  const playerNameLineHeight = Math.round(adaptive.fs(48, 0.72, 1.02) * uiScale);
+  const editIconSize = Math.round(
+    Math.max(
+      isCompactLayout ? 18 : 22,
+      Math.min(
+        isCompactLayout ? 24 : isMediumResponsiveLayout ? 30 : 34,
+        playerNameFontSize * (isCompactLayout ? 0.72 : 0.76),
+      ),
+    ),
+  );
+  const editButtonSize = Math.round(editIconSize + Math.max(6, Math.round(8 * fluidScale)));
+
+  const dynamicPanelStyle = {
+    paddingHorizontal: Math.round((isPhoneLandscapeTwoPlayer ? design.spacing.xs : isMediumResponsiveLayout ? design.spacing.sm : isCompactLayout ? design.spacing.xs : design.spacing.md) * fluidScale),
+    paddingTop: Math.round((isPhoneLandscapeTwoPlayer ? design.spacing.xs : isMediumResponsiveLayout ? design.spacing.sm : isCompactLayout ? design.spacing.xs : design.spacing.md) * fluidScale),
+    paddingBottom: Math.round((isPhoneLandscapeTwoPlayer ? design.spacing.xs : isMediumResponsiveLayout ? design.spacing.sm : isCompactLayout ? design.spacing.xs : design.spacing.md) * fluidScale),
+    borderRadius: Math.round((isPhoneLandscapeTwoPlayer ? design.radius.lg : isMediumResponsiveLayout ? design.radius.xl : isCompactLayout ? design.radius.lg : layoutRules.panelRadius) * fluidScale),
+  };
+  const dynamicNameRowStyle = {
+    minHeight: Math.round((isCompactLayout ? 46 : isMediumResponsiveLayout ? 54 : 62) * fluidScale),
+  };
+  const dynamicFlagStyle = {
+    width: Math.round((isCompactLayout ? 76 : isMediumResponsiveLayout ? 92 : 112) * fluidScale),
+    height: Math.round((isCompactLayout ? 50 : isMediumResponsiveLayout ? 62 : 76) * fluidScale),
+    marginRight: Math.round((isCompactLayout ? 10 : 14) * fluidScale),
+  };
+  const dynamicEditButtonStyle = {
+    width: editButtonSize,
+    height: editButtonSize,
+    marginLeft: Math.round(6 * fluidScale),
+  };
+  const dynamicEditIconStyle = {
+    width: editIconSize,
+    height: editIconSize,
+  };
+  const dynamicStepButtonStyle = {
+    minHeight: Math.round((isCompactLayout ? 36 : isMediumResponsiveLayout ? 40 : 46) * fluidScale),
+  };
+  const scoreTop = isCaromThreePlayerCompactCard
+    ? Math.round(92 * fluidScale)
+    : Math.round((isPhoneLandscapeTwoPlayer ? 118 : isExtraCompactLayout ? 112 : isCompactLayout ? 122 : isMediumResponsiveLayout ? 146 : 172) * fluidScale);
+  const scoreBottom = isCaromThreePlayerCompactCard
+    ? Math.round(46 * fluidScale)
+    : Math.round((isPhoneLandscapeTwoPlayer ? 64 : isExtraCompactLayout ? 62 : isCompactLayout ? 70 : isMediumResponsiveLayout ? 88 : 104) * fluidScale);
+
+  const scoreDigitCount = Math.max(
+    1,
+    String(Math.abs(Math.trunc(totalPointValue))).length + (totalPointValue < 0 ? 1 : 0),
+  );
+  const estimatedPanelWidth = Math.max(
+    220,
+    Math.round(
+      adaptive.width *
+        (totalPlayers > 2
+          ? 0.26
+          : isCompactLayout
+          ? 0.27
+          : 0.31),
+    ),
+  );
+  const estimatedPanelHeight = Math.max(320, Math.round(adaptive.height - layoutRules.headerHeight - layoutRules.screenPaddingY * 2));
+  const measuredPanelWidth = panelSize.width > 0 ? panelSize.width : estimatedPanelWidth;
+  const measuredPanelHeight = panelSize.height > 0 ? panelSize.height : estimatedPanelHeight;
+  const scoreLayerHeight = Math.max(80, measuredPanelHeight - scoreTop - scoreBottom);
+  const scoreLayerAvailableWidth = isPool15OnlyMode
+    ? Math.max(
+        86,
+        Math.round(
+          measuredPanelWidth * (isCompactLayout ? 0.42 : 0.46) -
+            (isCompactLayout ? 18 : 28),
+        ),
+      )
+    : measuredPanelWidth;
+  const baseScoreFont = adaptive.fs(
+    isMultiPlayerLayout
+      ? isCaromMode
+        ? isCaromThreePlayerCompactCard
+          ? 180
+          : isFourPlayerScoreLayout
+          ? 195
+          : 260
+        : isFourPlayerScoreLayout
+        ? 190
+        : 240
+      : isCaromMode
+      ? isPhoneLandscapeTwoPlayer
+        ? 375
+        : isExtraCompactLayout
+        ? 350
+        : isCompactLayout
+        ? 425
+        : 575
+      : isPhoneLandscapeTwoPlayer
+      ? 375
+      : isExtraCompactLayout
+      ? 338
+      : isCompactLayout
+      ? 413
+      : isMediumResponsiveLayout
+      ? 495
+      : 575,
+    isCompactLayout ? 0.5 : 0.62,
+    1,
+  );
+  const digitWidthFactor = isPool15OnlyMode
+    ? scoreDigitCount >= 3
+      ? 0.64
+      : scoreDigitCount === 2
+      ? 0.68
+      : 0.72
+    : scoreDigitCount >= 4
+    ? 0.62
+    : scoreDigitCount >= 3
+    ? 0.66
+    : scoreDigitCount === 2
+    ? 0.7
+    : 0.95;
+  const scoreHorizontalFill = isPool15OnlyMode
+    ? isCompactLayout
+      ? 0.84
+      : 0.88
+    : scoreDigitCount >= 3
+    ? isCompactLayout
+      ? 0.82
+      : 0.86
+    : isCompactLayout
+    ? 0.88
+    : 0.92;
+  const scoreFontByWidth =
+    (scoreLayerAvailableWidth * scoreHorizontalFill) /
+    Math.max(scoreDigitCount * digitWidthFactor, 1);
+  const scoreFontByHeight =
+    scoreLayerHeight *
+    (isPool15OnlyMode ? 0.72 : isMultiPlayerLayout ? 0.82 : isCompactLayout ? 0.86 : 0.9);
+  const scoreReadableFloor = isPool15OnlyMode
+    ? isExtraCompactLayout
+      ? 72
+      : isCompactLayout
+      ? 86
+      : 108
+    : isMultiPlayerLayout
+    ? 58
+    : isExtraCompactLayout
+    ? 96
+    : isCompactLayout
+    ? 116
+    : 150;
+  const playerScoreFontSize = Math.round(
+    Math.max(
+      Math.min(scoreReadableFloor, scoreFontByWidth, scoreFontByHeight),
+      Math.min(baseScoreFont, scoreFontByWidth, scoreFontByHeight),
+    ),
+  );
+  const responsiveScoreTextStyle = {
+    fontSize: playerScoreFontSize,
+    lineHeight: Math.round(playerScoreFontSize * 1.06),
+    maxWidth: '100%' as const,
+    flexShrink: 1,
+  };
+
+  const snookerScoreFontSize = Math.round(
+    Math.max(
+      isCompactLayout ? 70 : isMediumResponsiveLayout ? 92 : 110,
+      Math.min(
+        playerScoreFontSize,
+        measuredPanelWidth * (scoreDigitCount >= 3 ? 0.4 : scoreDigitCount === 2 ? 0.52 : 0.64),
+        measuredPanelHeight * (isCompactLayout ? 0.22 : isMediumResponsiveLayout ? 0.28 : 0.32),
+      ),
+    ),
+  );
+  const snookerScoreTextStyle = {
+    fontSize: snookerScoreFontSize,
+    lineHeight: Math.round(snookerScoreFontSize * 1.04),
+    maxWidth: '100%' as const,
+    flexShrink: 1,
+  };
+
+  const pool8BallTop = Math.round(scoreTop + 4 * fluidScale);
+  const pool8BallBottom = Math.max(18, Math.round(scoreBottom + 12 * fluidScale));
+  const pool8AddTimeTop = Math.max(82, Math.round(scoreTop - 4 * fluidScale));
+  const isPool8LeftPlayerLayout = isPool15OnlyMode && props.index === 0;
+  const isPool8RightPlayerLayout = isPool15OnlyMode && props.index === 1;
+  const snookerControlsDisabled =
+    !isSnookerMode || !props.isStarted || props.isPaused || !isActiveCard;
+  const snookerControlButtonHeight = Math.round(
+    (isCompactLayout ? 30 : isMediumResponsiveLayout ? 34 : 38) * fluidScale,
+  );
+  const snookerControlTextSize = Math.round(
+    (isCompactLayout ? 11 : isMediumResponsiveLayout ? 12 : 13) * uiScale,
+  );
+  const isLeftSnookerPlayer = props.index === 0;
+  const snookerSetBox = (
+    <View
+      style={[
+        styles.snookerSetBox,
+        isCompactLayout && styles.snookerSetBoxCompact,
+        !isActiveCard && styles.snookerSetBoxInactive,
+      ]}>
+      <RNText
+        style={[
+          styles.snookerSetBoxLabel,
+          {fontSize: Math.round((isCompactLayout ? 12 : 15) * uiScale)},
+        ]}
+        allowFontScaling={false}
+        maxFontSizeMultiplier={1}>
+        {tr('Set', 'Set')}
+      </RNText>
+      <RNText
+        style={[
+          styles.snookerSetBoxValue,
+          {fontSize: Math.round((isCompactLayout ? 34 : 48) * uiScale)},
+        ]}
+        allowFontScaling={false}
+        maxFontSizeMultiplier={1}>
+        {snookerSetScore}
+      </RNText>
+    </View>
+  );
+
+  return (
+    <View
+      onLayout={onPanelLayout}
+      style={[
+        styles.panel,
+        !isLargeDisplay && styles.panelScaled,
+        isMediumResponsiveLayout ? styles.panelMedium : undefined,
+        isPhoneLandscapeTwoPlayer ? styles.panelPhoneLandscape : undefined,
+        panelDynamicStyle,
+        dynamicPanelStyle,
+        isActiveCard ? styles.panelActive : styles.panelInactive,
+      ]}>
+      <View
+        style={[
+          styles.nameRow,
+          isMediumResponsiveLayout ? styles.nameRowMedium : undefined,
+          isCompactLayout && styles.nameRowCompact,
+          dynamicNameRowStyle,
+        ]}>
+        {playerFlagImage || playerFlag ? (
+          <View
+            style={[
+              styles.flagBadge,
+              isMediumResponsiveLayout ? styles.flagBadgeMedium : undefined,
+              isCompactLayout && styles.flagBadgeCompact,
+              isActiveCard ? styles.flagBadgeActive : styles.flagBadgeInactive,
+              dynamicFlagStyle,
+            ]}>
+            {playerFlagImage ? (
+              <RNImage
+                source={{uri: playerFlagImage}}
+                resizeMode="contain"
+                fadeDuration={0}
+                style={styles.flagImage}
+              />
+            ) : (
+              <RNText
+                style={[
+                  styles.flagText,
+                  isMediumResponsiveLayout ? styles.flagTextMedium : undefined,
+                  isCompactLayout && styles.flagTextCompact,
+                  !isActiveCard && styles.flagTextInactive,
+                ]}
+                allowFontScaling={false}
+                maxFontSizeMultiplier={1}>
+                {playerFlag}
+              </RNText>
+            )}
+          </View>
+        ) : null}
+
+        {viewModel.nameEditable ? (
+          <TextInput
+            value={viewModel.draftName}
+            onChangeText={viewModel.onChangeDraftName}
+            autoFocus
+            onBlur={viewModel.onCommitName}
+            onSubmitEditing={viewModel.onCommitName}
+            blurOnSubmit
+            numberOfLines={1}
+            allowFontScaling={false}
+            maxFontSizeMultiplier={1}
+            style={[
+              styles.nameInput,
+              {fontSize: playerNameFontSize, lineHeight: playerNameLineHeight},
+              (playerFlagImage || playerFlag) && styles.nameTextWithFlag,
+              isMediumResponsiveLayout ? styles.nameInputMedium : undefined,
+              isCompactLayout && styles.nameInputCompact,
+              textColorStyle,
+              !isActiveCard && styles.nameTextInactive,
+              styles.nameInputEditing,
+              editingNameTextStyle,
+            ]}
+            placeholderTextColor={editingNamePlaceholderColor}
+            selectionColor={'#FF1818'}
+          />
+        ) : (
+          <RNText
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.72}
+            allowFontScaling={false}
+            maxFontSizeMultiplier={1}
+            style={[
+              styles.nameText,
+              {fontSize: playerNameFontSize, lineHeight: playerNameLineHeight},
+              (playerFlagImage || playerFlag) && styles.nameTextWithFlag,
+              isMediumResponsiveLayout ? styles.nameTextMedium : undefined,
+              isCompactLayout && styles.nameTextCompact,
+              textColorStyle,
+              !isActiveCard && styles.nameTextInactive,
+            ]}>
+            {props.player.name}
+          </RNText>
+        )}
+
+        <Button
+          onPress={viewModel.onToggleEditName}
+          style={[
+            styles.editButton,
+            isMediumResponsiveLayout ? styles.editButtonMedium : undefined,
+            isCompactLayout && styles.editButtonCompact,
+            !isActiveCard && styles.editButtonInactive,
+            dynamicEditButtonStyle,
+          ]}>
+          <RNImage
+            source={images.game.editPencil}
+            resizeMode="contain"
+            fadeDuration={0}
+            style={[
+              styles.editIcon,
+              isMediumResponsiveLayout ? styles.editIconMedium : undefined,
+              isCompactLayout && styles.editIconCompact,
+              !isActiveCard && styles.editIconInactive,
+              dynamicEditIconStyle,
+            ]}
+          />
+        </Button>
+      </View>
+
+      {isSnookerMode ? null : (
+        <View
+          direction={'row'}
+          style={[
+            styles.plusMinusRow,
+            isMediumResponsiveLayout ? styles.plusMinusRowMedium : undefined,
+            isCompactLayout && styles.plusMinusRowCompact,
+            !isActiveCard && styles.controlsRowInactive,
+          ]}>
+          <Button
+            style={[
+              styles.stepButton,
+              isCaromMode && styles.stepButtonCaromOutline,
+              isMediumResponsiveLayout ? styles.stepButtonMedium : undefined,
+              isCompactLayout && styles.stepButtonCompact,
+              dynamicStepButtonStyle,
+            ]}
+            onPress={viewModel.onDecreasePoint}>
+            <RNText
+              style={[
+                styles.stepButtonText,
+                {
+                  fontSize: Math.round((isCompactLayout ? 26 : 30) * uiScale),
+                  lineHeight: Math.round((isCompactLayout ? 26 : 30) * uiScale),
+                  textAlign: 'center',
+                },
+                isMediumResponsiveLayout ? styles.stepButtonTextMedium : undefined,
+                isCompactLayout && styles.stepButtonTextCompact,
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              -
+            </RNText>
+          </Button>
+
+          <Button
+            style={[
+              styles.stepButton,
+              isCaromMode && styles.stepButtonCaromOutline,
+              isMediumResponsiveLayout ? styles.stepButtonMedium : undefined,
+              isCompactLayout && styles.stepButtonCompact,
+              dynamicStepButtonStyle,
+            ]}
+            onPress={viewModel.onIncreasePoint}>
+            <RNText
+              style={[
+                styles.stepButtonText,
+                {
+                  fontSize: Math.round((isCompactLayout ? 26 : 30) * uiScale),
+                  lineHeight: Math.round((isCompactLayout ? 26 : 30) * uiScale),
+                  textAlign: 'center',
+                },
+                isMediumResponsiveLayout ? styles.stepButtonTextMedium : undefined,
+                isCompactLayout && styles.stepButtonTextCompact,
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              +
+            </RNText>
+          </Button>
+        </View>
+      )}
+
+      {viewModel.showProMode ? (
+        <View
+          direction={'row'}
+          style={[
+            styles.statsRow,
+            isMediumResponsiveLayout ? styles.statsRowMedium : undefined,
+            isCompactLayout && styles.statsRowCompact,
+            !isActiveCard && styles.statsRowInactive,
+          ]}>
+          <View style={styles.statBlock}>
+            <RNText
+              style={[
+                styles.statLabel,
+                isMediumResponsiveLayout ? styles.statLabelMedium : undefined,
+                isCompactLayout && styles.statLabelCompact,
+                {color: secondaryTextColor},
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              High run 1
+            </RNText>
+            <RNText
+              style={[
+                styles.statValue,
+                isMediumResponsiveLayout ? styles.statValueMedium : undefined,
+                isCompactLayout && styles.statValueCompact,
+                textColorStyle,
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              {viewModel.highestRate}
+            </RNText>
+          </View>
+
+          <View style={styles.statBlock}>
+            <RNText
+              style={[
+                styles.statLabel,
+                isMediumResponsiveLayout ? styles.statLabelMedium : undefined,
+                isCompactLayout && styles.statLabelCompact,
+                {color: secondaryTextColor},
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              High run 2
+            </RNText>
+            <RNText
+              style={[
+                styles.statValue,
+                isMediumResponsiveLayout ? styles.statValueMedium : undefined,
+                isCompactLayout && styles.statValueCompact,
+                textColorStyle,
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              {viewModel.secondHighestRate}
+            </RNText>
+          </View>
+
+          <View style={styles.statBlock}>
+            <RNText
+              style={[
+                styles.statLabel,
+                isMediumResponsiveLayout ? styles.statLabelMedium : undefined,
+                isCompactLayout && styles.statLabelCompact,
+                {color: secondaryTextColor},
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              Average
+            </RNText>
+            <RNText
+              style={[
+                styles.statValue,
+                isMediumResponsiveLayout ? styles.statValueMedium : undefined,
+                isCompactLayout && styles.statValueCompact,
+                textColorStyle,
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              {viewModel.averagePoint}
+            </RNText>
+          </View>
+        </View>
+      ) : null}
+
+      {isSnookerMode ? (
+        <View
+          style={[
+            styles.snookerScoreRow,
+            isCompactLayout && styles.snookerScoreRowCompact,
+          ]}
+          pointerEvents="none">
+          {isLeftSnookerPlayer ? snookerSetBox : null}
+          <View
+            style={[
+              styles.snookerScoreBlock,
+              isLeftSnookerPlayer
+                ? styles.snookerScoreBlockLeftPlayer
+                : styles.snookerScoreBlockRightPlayer,
+              isMediumResponsiveLayout ? styles.snookerScoreBlockMedium : undefined,
+              isCompactLayout && styles.snookerScoreBlockCompact,
+              !isActiveCard && styles.scoreLayerInactive,
+            ]}>
+            <RNText
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.42}
+              style={[
+                styles.scoreText,
+                styles.snookerScoreText,
+                isLeftSnookerPlayer
+                  ? styles.snookerScoreTextLeftPlayer
+                  : styles.snookerScoreTextRightPlayer,
+                textColorStyle,
+                snookerScoreTextStyle,
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              {totalPointValue}
+            </RNText>
+          </View>
+          {!isLeftSnookerPlayer ? snookerSetBox : null}
+        </View>
+      ) : (
+        <View
+          style={[
+            styles.scoreLayer,
+            isMediumResponsiveLayout ? styles.scoreLayerMedium : undefined,
+            scoreLayerDynamicStyle,
+            {top: scoreTop, bottom: scoreBottom},
+            isPool15OnlyMode && styles.pool8ScoreLayer,
+            isPool8RightPlayerLayout && styles.pool8ScoreLayerMirrored,
+            !isActiveCard && styles.scoreLayerInactive,
+            isPool15FreeMode && hasScoredBalls && styles.scoreLayerWithScoredBalls,
+          ]}
+          pointerEvents="none">
+          <View
+            style={[
+              styles.scoreTextBox,
+              isMediumResponsiveLayout ? styles.scoreTextBoxMedium : undefined,
+              isCompactLayout && styles.scoreTextBoxCompact,
+              isMultiPlayerLayout && styles.scoreTextBoxMultiPlayer,
+              isFourPlayerScoreLayout && styles.scoreTextBoxFourPlayer,
+              isCaromThreePlayerCompactCard &&
+                styles.scoreTextBoxCaromThreePlayerCompact,
+              isPool15OnlyMode && styles.pool8ScoreTextBox,
+            ]}>
+            <RNText
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.42}
+              style={[
+                styles.scoreText,
+                isMediumResponsiveLayout ? styles.scoreTextMedium : undefined,
+                scoreTextDynamicStyle,
+                libreScoreTextStyle,
+                textColorStyle,
+                isPool15OnlyMode && styles.pool8ScoreText,
+                responsiveScoreTextStyle,
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              {totalPointValue}
+            </RNText>
+          </View>
+        </View>
+      )}
+
+      {isSnookerMode ? (
+        <View
+          style={[
+            styles.snookerPlayerControls,
+            isMediumResponsiveLayout ? styles.snookerPlayerControlsMedium : undefined,
+            isCompactLayout && styles.snookerPlayerControlsCompact,
+            snookerControlsDisabled && styles.controlsRowInactive,
+          ]}>
+          <View style={styles.snookerPlayerControlsHeader}>
+            <RNText
+              style={[
+                styles.snookerPlayerSectionTitle,
+                {fontSize: snookerControlTextSize, lineHeight: snookerControlTextSize + 3},
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              {tr('Bi / điểm', 'Balls / points')}
+            </RNText>
+            <RNText
+              style={[
+                styles.snookerPlayerFoulTitleInline,
+                {fontSize: snookerControlTextSize, lineHeight: snookerControlTextSize + 3},
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              {tr('Lỗi cho đối thủ', 'Foul to opponent')}
+            </RNText>
+          </View>
+
+          <View style={styles.snookerPlayerButtonGrid}>
+            {SNOOKER_BALL_SCORES.map(ball => (
+              <Button
+                key={`player-snooker-ball-${props.index}-${ball.value}`}
+                onPress={
+                  snookerControlsDisabled
+                    ? undefined
+                    : () => props.onSnookerScore?.(ball.value, props.index)
+                }
+                style={[
+                  styles.snookerPlayerButton,
+                  {minHeight: snookerControlButtonHeight},
+                  ball.value === 1 ? styles.snookerPlayerButtonRed : undefined,
+                ]}>
+                <RNText
+                  style={[
+                    styles.snookerPlayerButtonText,
+                    {fontSize: snookerControlTextSize, lineHeight: snookerControlTextSize + 3},
+                  ]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.58}
+                  allowFontScaling={false}
+                  maxFontSizeMultiplier={1}>
+                  {`${isEnglish() ? ball.labelEn : ball.labelVi} +${ball.value}`}
+                </RNText>
+              </Button>
+            ))}
+          </View>
+
+          <View style={styles.snookerPlayerFoulGrid}>
+            {SNOOKER_FOUL_SCORES.map(point => (
+              <Button
+                key={`player-snooker-foul-${props.index}-${point}`}
+                onPress={
+                  snookerControlsDisabled
+                    ? undefined
+                    : () => props.onSnookerFoul?.(point, props.index)
+                }
+                style={[
+                  styles.snookerPlayerFoulButton,
+                  {minHeight: snookerControlButtonHeight},
+                ]}>
+                <RNText
+                  style={[
+                    styles.snookerPlayerFoulButtonText,
+                    {fontSize: snookerControlTextSize, lineHeight: snookerControlTextSize + 3},
+                  ]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.58}
+                  allowFontScaling={false}
+                  maxFontSizeMultiplier={1}>
+                  {`Foul +${point}`}
+                </RNText>
+              </Button>
+            ))}
+          </View>
+        </View>
+      ) : null}
+
+      {showAddTime ? (
+        <View
+          style={[
+            styles.addTimeStack,
+            isMediumResponsiveLayout ? styles.addTimeStackMedium : undefined,
+            isCompactLayout && styles.addTimeStackCompact,
+            isPool15OnlyMode && styles.addTimeStackPool8,
+            isPool15OnlyMode && {top: pool8AddTimeTop},
+            !isActiveCard && styles.addTimeStackInactive,
+          ]}>
+          {addTimeButtons.map(index => (
+            <Button
+              key={`extra-time-${index}`}
+              onPress={isActiveCard ? props.onPressGiveMoreTime : undefined}
+              style={[
+                styles.addTimeButton,
+                isMediumResponsiveLayout ? styles.addTimeButtonMedium : undefined,
+                isCompactLayout && styles.addTimeButtonCompact,
+                addTimeButtonDynamicStyle,
+                !isActiveCard && styles.addTimeButtonInactive,
+              ]}>
+              <RNImage
+                source={images.game.addTime}
+                resizeMode="contain"
+                style={[
+                  styles.addTimeIcon,
+                  isMediumResponsiveLayout ? styles.addTimeIconMedium : undefined,
+                  isCompactLayout && styles.addTimeIconCompact,
+                  addTimeIconDynamicStyle,
+                  !isActiveCard && styles.addTimeTextInactive,
+                ]}
+              />
+            </Button>
+          ))}
+        </View>
+      ) : null}
+
+      {showPool8Tracker && pool8CurrentTrackerBall?.ball ? (
+        <View
+          style={[
+            styles.pool8CurrentBallWrap,
+            isPool8RightPlayerLayout ? styles.pool8CurrentBallWrapMirrored : undefined,
+            {top: pool8BallTop, bottom: pool8BallBottom},
+            !isActiveCard && styles.pool8TrackerStackInactive,
+          ]}>
+          <Pool8BlackBall
+            key={`pool8-current-${props.index}-${pool8CurrentTrackerBall.index}-${pool8CurrentTrackerBall.number}`}
+            number={pool8CurrentTrackerBall.number}
+            size={64}
+            onPress={isActiveCard ? () => props.onPressPool8Ball?.(props.index) : undefined}
+          />
+        </View>
+      ) : null}
+
+      {isPool15FreeMode && (props.player.scoredBalls || []).length > 0 ? (
+        <View
+          style={[
+            styles.scoredBallStack,
+            isPool15FreeMode && styles.scoredBallStackPool15Free,
+            isMediumResponsiveLayout ? styles.scoredBallStackMedium : undefined,
+            isCompactLayout && styles.scoredBallStackCompact,
+            isPool15FreeMode && isMediumResponsiveLayout && styles.scoredBallStackPool15FreeMedium,
+            isPool15FreeMode && isCompactLayout && styles.scoredBallStackPool15FreeCompact,
+            isPool15FreeMode && styles.scoredBallStackPool15FreeTwoCol,
+            isPool15FreeMode && isMediumResponsiveLayout && styles.scoredBallStackPool15FreeTwoColMedium,
+            isPool15FreeMode && isCompactLayout && styles.scoredBallStackPool15FreeTwoColCompact,
+            !isActiveCard && styles.scoredBallStackInactive,
+          ]}>
+          {(props.player.scoredBalls || []).map((ball, index) => {
+            return (
+              <Pool8BlackBall
+                key={`player-scored-ball-${ball.number}-${index}`}
+                number={ball.number}
+                size={isCompactLayout ? 24 : isMediumResponsiveLayout ? 26 : 28}
+                style={styles.scoredBallAssetWrap}
+              />
+            );
+          })}
+        </View>
+      ) : null}
+
+      {isActiveCard ? (
+        <Button
+          onPress={() => viewModel.onEndTurn()}
+          style={[
+            isSnookerMode ? styles.snookerPlayingBadge : styles.playingBadge,
+            isSnookerMode ? undefined : isMediumResponsiveLayout ? styles.playingBadgeMedium : undefined,
+            !isSnookerMode && isCompactLayout && styles.playingBadgeCompact,
+            styles.playingBadgeActive,
+          ]}>
+          <RNText
+            style={[
+              styles.playingText,
+              isMediumResponsiveLayout ? styles.playingTextMedium : undefined,
+              isCompactLayout && styles.playingTextCompact,
+              styles.playingTextActive,
+            ]}
+            allowFontScaling={false}
+            maxFontSizeMultiplier={1}>
+            {tr('Đổi lượt đánh', 'Switch turn')}
+          </RNText>
+        </Button>
+      ) : (
+        <View
+          style={[
+            isSnookerMode ? styles.snookerPlayingBadge : styles.playingBadge,
+            isSnookerMode ? undefined : isMediumResponsiveLayout ? styles.playingBadgeMedium : undefined,
+            !isSnookerMode && isCompactLayout && styles.playingBadgeCompact,
+            styles.playingBadgeInactive,
+          ]}>
+          <RNText
+            style={[
+              styles.playingText,
+              isMediumResponsiveLayout ? styles.playingTextMedium : undefined,
+              isCompactLayout && styles.playingTextCompact,
+              styles.playingTextInactive,
+            ]}
+            allowFontScaling={false}
+            maxFontSizeMultiplier={1}>
+            {tr('Đổi lượt đánh', 'Switch turn')}
+          </RNText>
+        </View>
+      )}
+
+      {!isSnookerMode ? (
+        <View
+          direction={'row'}
+          alignItems={'center'}
+          style={[
+            styles.violateWrap,
+            isMediumResponsiveLayout ? styles.violateWrapMedium : undefined,
+            isCompactLayout && styles.violateWrapCompact,
+            !isActiveCard && styles.violateWrapInactive,
+          ]}>
+          <Button
+            onPress={viewModel.onViolate}
+            style={[
+              styles.violateCircle,
+              isMediumResponsiveLayout ? styles.violateCircleMedium : undefined,
+              isCompactLayout && styles.violateCircleCompact,
+              !isActiveCard && styles.violateCircleInactive,
+            ]}>
+            <RNText
+              style={[
+                styles.violateX,
+                isMediumResponsiveLayout ? styles.violateXMedium : undefined,
+                isCompactLayout && styles.violateXCompact,
+                !isActiveCard && styles.violateXInactive,
+              ]}
+              allowFontScaling={false}
+              maxFontSizeMultiplier={1}>
+              ×
+            </RNText>
+          </Button>
+          <RNText
+            style={[
+              styles.violateCount,
+              isMediumResponsiveLayout ? styles.violateCountMedium : undefined,
+              isCompactLayout && styles.violateCountCompact,
+              textColorStyle,
+              !isActiveCard && styles.violateCountInactive,
+            ]}
+            allowFontScaling={false}
+            maxFontSizeMultiplier={1}>
+            {props.player.violate || 0}
+          </RNText>
+        </View>
+      ) : null}
+    </View>
+  );
+};
+
+const createStyles = (adaptive: any, design: any, rules: any) => createGameplayStyles(adaptive, {
+  panel: {
+    flex: 1,
+    borderRadius: 26,
+    borderWidth: 1.4,
+    borderColor: '#FF1818',
+    backgroundColor: '#000000',
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 18,
+    overflow: 'hidden',
+  },
+  panelScaled: {
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 12,
+    borderRadius: 20,
+  },
+  panelActive: {
+    opacity: 1,
+  },
+  panelInactive: {
+    opacity: 0.52,
+  },
+  panelPhoneLandscape: {
+    paddingHorizontal: 10,
+    paddingTop: 10,
+    paddingBottom: 10,
+    borderRadius: 18,
+  },
+  panelMedium: {
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 14,
+    borderRadius: 22,
+  },
+  nameRow: {
+    minHeight: 62,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  nameRowMedium: {
+    minHeight: 54,
+  },
+  nameRowCompact: {
+    minHeight: 46,
+  },
+  flagBadge: {
+  width: 112,
+  height: 76,
+  borderRadius: 8,
+  alignItems: 'center',
+  justifyContent: 'center',
+  marginRight: 14,
+  paddingHorizontal: 0,
+  backgroundColor: 'transparent',
+  borderWidth: 0,
+  borderColor: 'transparent',
+  overflow: 'hidden',
+},
+  flagBadgeMedium: {
+    width: 92,
+    height: 62,
+    marginRight: 12,
+  },
+  flagBadgeCompact: {
+    width: 76,
+    height: 50,
+    marginRight: 10,
+  },
+  flagBadgeActive: {
+    opacity: 1,
+  },
+  flagBadgeInactive: {
+    opacity: 0.78,
+  },
+  flagImage: {
+  width: '106%',
+  height: '106%',
+  marginLeft: '-3%',
+  marginTop: '-3%',
+  backgroundColor: 'transparent',
+},
+  flagText: {
+    width: '100%',
+    fontSize: 52,
+    lineHeight: 56,
+    textAlign: 'center',
+    includeFontPadding: true,
+  },
+  flagTextMedium: {
+    fontSize: 42,
+    lineHeight: 44,
+  },
+  flagTextCompact: {
+    fontSize: 34,
+    lineHeight: 36,
+  },
+  flagTextInactive: {
+    opacity: 0.92,
+  },
+  nameText: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  nameTextWithFlag: {
+    textAlign: 'left',
+  },
+  nameTextMedium: {},
+  nameTextCompact: {},
+  nameInput: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontWeight: '900',
+    textAlign: 'center',
+    paddingVertical: 0,
+  },
+  nameInputEditing: {
+    backgroundColor: '#FFFFFF',
+    color: '#111111',
+  },
+  nameInputMedium: {},
+  nameInputCompact: {},
+  nameTextInactive: {
+    opacity: 0.9,
+  },
+  editButton: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 6,
+  },
+  editButtonMedium: {
+    width: 32,
+    height: 32,
+  },
+  editButtonCompact: {
+    width: 28,
+    height: 28,
+  },
+  editButtonInactive: {
+    opacity: 0.55,
+  },
+  editText: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    lineHeight: 22,
+    fontWeight: '700',
+    textAlign: 'center',
+    includeFontPadding: false,
+  },
+  editTextMedium: {
+    fontSize: 18,
+    lineHeight: 18,
+  },
+  editTextCompact: {
+    fontSize: 16,
+    lineHeight: 16,
+  },
+  editTextInactive: {
+    opacity: 0.9,
+  },
+  editIcon: {
+    width: 28,
+    height: 28,
+    backgroundColor: 'transparent',
+  },
+  editIconMedium: {
+    width: 26,
+    height: 26,
+  },
+  editIconCompact: {
+    width: 22,
+    height: 22,
+  },
+  editIconInactive: {
+    opacity: 0.92,
+  },
+  plusMinusRow: {
+    marginTop: 18,
+    justifyContent: 'space-between',
+    gap: 14,
+    zIndex: 4,
+    elevation: 4,
+  },
+  plusMinusRowMedium: {
+    marginTop: 12,
+    gap: 10,
+  },
+  plusMinusRowCompact: {
+    marginTop: 8,
+    gap: 8,
+  },
+  controlsRowInactive: {
+    opacity: 0.7,
+  },
+  stepButton: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepButtonCaromOutline: {
+    borderWidth: 2,
+    borderColor: '#000000',
+  },
+  stepButtonMedium: {
+    minHeight: 40,
+  },
+  stepButtonCompact: {
+    minHeight: 36,
+  },
+  stepButtonText: {
+    color: '#000000',
+    fontWeight: '700',
+    includeFontPadding: false,
+    textAlign: 'center',
+    textAlignVertical: 'center',
+  },
+  stepButtonTextMedium: {},
+  stepButtonTextCompact: {},
+  snookerScoreRow: {
+    flex: 1,
+    minHeight: 120,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginTop: 8,
+    gap: 12,
+    zIndex: 1,
+  },
+  snookerScoreRowCompact: {
+    marginTop: 6,
+    gap: 8,
+  },
+  snookerSetBox: {
+    width: 104,
+    minHeight: 112,
+    alignSelf: 'center',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255,37,37,0.55)',
+    backgroundColor: '#111216',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+  },
+  snookerSetBoxCompact: {
+    width: 78,
+    minHeight: 88,
+    borderRadius: 14,
+    paddingVertical: 8,
+  },
+  snookerSetBoxInactive: {
+    opacity: 0.72,
+  },
+  snookerSetBoxLabel: {
+    color: 'rgba(255,255,255,0.86)',
+    fontWeight: '900',
+    includeFontPadding: false,
+    textAlign: 'center',
+  },
+  snookerSetBoxValue: {
+    marginTop: 8,
+    color: '#FF2525',
+    fontWeight: '900',
+    includeFontPadding: false,
+    textAlign: 'center',
+  },
+  snookerScoreBlock: {
+    flex: 1,
+    minHeight: 150,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    zIndex: 1,
+  },
+  snookerScoreBlockLeftPlayer: {
+    alignItems: 'flex-end',
+  },
+  snookerScoreBlockRightPlayer: {
+    alignItems: 'flex-start',
+  },
+  snookerScoreBlockMedium: {
+    minHeight: 128,
+  },
+  snookerScoreBlockCompact: {
+    minHeight: 90,
+    paddingVertical: 4,
+  },
+  snookerScoreText: {
+    width: '100%',
+  },
+  snookerScoreTextLeftPlayer: {
+    textAlign: 'right',
+  },
+  snookerScoreTextRightPlayer: {
+    textAlign: 'left',
+  },
+  snookerPlayerControls: {
+    marginTop: 6,
+    zIndex: 2,
+    elevation: 2,
+    flexShrink: 0,
+  },
+  snookerPlayerControlsMedium: {
+    marginTop: 10,
+  },
+  snookerPlayerControlsCompact: {
+    marginTop: 8,
+  },
+  snookerPlayerControlsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 5,
+  },
+  snookerPlayerSectionTitle: {
+    color: '#FFFFFF',
+    fontWeight: '900',
+    includeFontPadding: false,
+  },
+  snookerPlayerFoulTitle: {
+    color: 'rgba(255,255,255,0.86)',
+    fontWeight: '800',
+    marginTop: 8,
+    marginBottom: 6,
+    includeFontPadding: false,
+  },
+  snookerPlayerFoulTitleInline: {
+    color: '#FF4D4D',
+    fontWeight: '900',
+    includeFontPadding: false,
+  },
+  snookerPlayerButtonGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 5,
+  },
+  snookerPlayerFoulGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginTop: 6,
+  },
+  snookerPlayerButton: {
+    flexGrow: 1,
+    flexBasis: '30%',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+    backgroundColor: '#202127',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  snookerPlayerButtonRed: {
+    backgroundColor: '#E11D25',
+    borderColor: '#FF3A3A',
+  },
+  snookerPlayerButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '900',
+    textAlign: 'center',
+    includeFontPadding: false,
+  },
+  snookerPlayerFoulButton: {
+    flexGrow: 1,
+    flexBasis: '22%',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#D9343E',
+    backgroundColor: '#65151B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  snookerPlayerFoulButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '900',
+    textAlign: 'center',
+    includeFontPadding: false,
+  },
+  statsRow: {
+    marginTop: 16,
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  statsRowMedium: {
+    marginTop: 10,
+    gap: 10,
+  },
+  statsRowCompact: {
+    marginTop: 8,
+    gap: 8,
+  },
+  statsRowInactive: {
+    opacity: 0.7,
+  },
+  statBlock: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  statLabel: {
+    fontSize: 16,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  statLabelMedium: {
+    fontSize: 14,
+    lineHeight: 16,
+  },
+  statLabelCompact: {
+    fontSize: 12,
+    lineHeight: 14,
+  },
+  statValue: {
+    marginTop: 6,
+    fontSize: 22,
+    lineHeight: 24,
+    fontWeight: '700',
+  },
+  statValueMedium: {
+    marginTop: 5,
+    fontSize: 18,
+    lineHeight: 20,
+  },
+  statValueCompact: {
+    marginTop: 4,
+    fontSize: 16,
+    lineHeight: 18,
+  },
+  scoreLayer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 172,
+    bottom: 104,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
+  scoreLayerMedium: {
+    top: 146,
+    bottom: 88,
+  },
+  scoreLayerCompact: {
+    top: 122,
+    bottom: 70,
+  },
+  scoreLayerExtraCompact: {
+    top: 112,
+    bottom: 62,
+  },
+  scoreLayerPhoneLandscape: {
+    top: 118,
+    bottom: 64,
+  },
+  scoreLayerCarom: {
+    top: 172,
+    bottom: 104,
+  },
+  scoreLayerCaromCompact: {
+    top: 122,
+    bottom: 70,
+  },
+  scoreLayerCaromExtraCompact: {
+    top: 112,
+    bottom: 62,
+  },
+  scoreLayerCaromPhoneLandscape: {
+    top: 118,
+    bottom: 64,
+  },
+  scoreLayerCaromThreePlayer: {
+    top: 132,
+    bottom: 56,
+  },
+  scoreLayerCaromThreePlayerCompact: {
+    top: 92,
+    bottom: 46,
+  },
+  scoreLayerCaromFourPlayer: {
+    top: 118,
+    bottom: 52,
+  },
+  scoreLayerPoolThreePlayer: {
+    top: 124,
+    bottom: 56,
+  },
+  scoreLayerPoolFourPlayer: {
+    top: 112,
+    bottom: 52,
+  },
+  scoreLayerInactive: {
+    opacity: 0.88,
+  },
+  scoreLayerWithScoredBalls: {
+    right: 44,
+  },
+  scoreTextBox: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingTop: 10,
+    paddingBottom: 6,
+    overflow: 'visible',
+  },
+  scoreTextBoxMedium: {
+    paddingHorizontal: 8,
+  },
+  scoreTextBoxCompact: {
+    paddingHorizontal: 6,
+  },
+  scoreTextBoxMultiPlayer: {
+    paddingHorizontal: 4,
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  scoreTextBoxFourPlayer: {
+    paddingHorizontal: 2,
+  },
+  scoreTextBoxCaromThreePlayerCompact: {
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  scoreText: {
+    width: '90%',
+    color: '#FFFFFF',
+    fontWeight: '900',
+    fontSize: 575,
+    lineHeight: 625,
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    includeFontPadding: false,
+  },
+  scoreTextMedium: {
+    fontSize: 495,
+    lineHeight: 540,
+  },
+  scoreTextCompact: {
+    fontSize: 413,
+    lineHeight: 450,
+  },
+  scoreTextExtraCompact: {
+    fontSize: 338,
+    lineHeight: 370,
+  },
+  scoreTextPhoneLandscape: {
+    fontSize: 375,
+    lineHeight: 410,
+  },
+  scoreTextCarom: {
+    fontSize: 575,
+    lineHeight: 625,
+  },
+  scoreTextCaromCompact: {
+    fontSize: 425,
+    lineHeight: 465,
+  },
+  scoreTextCaromExtraCompact: {
+    fontSize: 350,
+    lineHeight: 385,
+  },
+  scoreTextCaromPhoneLandscape: {
+    fontSize: 375,
+    lineHeight: 410,
+  },
+  scoreTextCaromThreePlayer: {
+    fontSize: 260,
+    lineHeight: 275,
+  },
+  scoreTextCaromThreePlayerCompact: {
+    fontSize: 180,
+    lineHeight: 190,
+  },
+  scoreTextCaromFourPlayer: {
+    fontSize: 195,
+    lineHeight: 210,
+  },
+  scoreTextPoolThreePlayer: {
+    fontSize: 240,
+    lineHeight: 255,
+  },
+  scoreTextPoolFourPlayer: {
+    fontSize: 190,
+    lineHeight: 205,
+  },
+  scoreTextLibre3Digits: {
+    fontSize: 475,
+    lineHeight: 515,
+  },
+  scoreTextLibre4Digits: {
+    fontSize: 375,
+    lineHeight: 410,
+  },
+  scoreTextLibre3DigitsCompact: {
+    fontSize: 375,
+    lineHeight: 410,
+  },
+  scoreTextLibre4DigitsCompact: {
+    fontSize: 300,
+    lineHeight: 330,
+  },
+  scoreTextLibre3DigitsExtraCompact: {
+    fontSize: 320,
+    lineHeight: 350,
+  },
+  scoreTextLibre4DigitsExtraCompact: {
+    fontSize: 260,
+    lineHeight: 290,
+  },
+  scoreTextLibre3DigitsPhoneLandscape: {
+    fontSize: 330,
+    lineHeight: 363,
+  },
+  scoreTextLibre4DigitsPhoneLandscape: {
+    fontSize: 265,
+    lineHeight: 295,
+  },
+  scoreTextSingleDigit: {},
+  scoreTextSingleDigitMedium: {},
+  scoreTextSingleDigitCompact: {},
+  scoreTextSingleDigitExtraCompact: {},
+  scoreTextSingleDigitPhoneLandscape: {},
+  scoreTextDoubleDigit: {},
+  scoreTextDoubleDigitMedium: {},
+  scoreTextDoubleDigitCompact: {},
+  scoreTextDoubleDigitExtraCompact: {},
+  scoreTextDoubleDigitPhoneLandscape: {},
+  addTimeStack: {
+    position: 'absolute',
+    right: 12,
+    top: '38%',
+    gap: 8,
+  },
+  addTimeStackMedium: {
+    right: 10,
+    gap: 7,
+  },
+  addTimeStackCompact: {
+    right: 8,
+    gap: 6,
+  },
+  addTimeStackInactive: {
+    opacity: 0.7,
+  },
+  addTimeButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 999,
+    borderWidth: 1.4,
+    borderColor: 'rgba(255,255,255,0.95)',
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000000',
+    shadowOpacity: 0.28,
+    shadowRadius: 4,
+    shadowOffset: {width: 0, height: 1},
+    elevation: 5,
+  },
+  addTimeButtonMedium: {
+    width: 38,
+    height: 38,
+  },
+  addTimeButtonCompact: {
+    width: 34,
+    height: 34,
+  },
+  addTimeButtonInactive: {
+    opacity: 0.65,
+  },
+  addTimeIcon: {
+    width: 26,
+    height: 26,
+    tintColor: '#FFFFFF',
+  },
+  addTimeIconMedium: {
+    width: 24,
+    height: 24,
+  },
+  addTimeIconCompact: {
+    width: 22,
+    height: 22,
+  },
+  addTimeText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  addTimeTextMedium: {
+    fontSize: 14,
+  },
+  addTimeTextCompact: {
+    fontSize: 12,
+  },
+  addTimeTextInactive: {
+    opacity: 0.92,
+  },
+  addTimeStackPool8: {
+    position: 'absolute',
+    right: 14,
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    gap: 8,
+    zIndex: 6,
+    elevation: 6,
+  },
+  pool8ScoreLayer: {
+    left: '46%',
+    right: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pool8ScoreLayerMirrored: {
+    left: 28,
+    right: '46%',
+  },
+  pool8ScoreTextBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    height: '100%',
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  pool8ScoreText: {
+    width: '100%',
+    fontSize: 425,
+    lineHeight: 440,
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    includeFontPadding: false,
+  },
+  pool8TrackerStackInactive: {
+    opacity: 0.84,
+  },
+  pool8CurrentBallWrap: {
+    position: 'absolute',
+    left: '18%',
+    width: 92,
+    marginLeft: -46,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 8,
+    elevation: 8,
+  },
+  pool8CurrentBallWrapMirrored: {
+    left: undefined,
+    right: '18%',
+    marginLeft: 0,
+    marginRight: -46,
+  },
+  pool8CurrentBall: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    borderWidth: 2.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  pool8CurrentBallStripe: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 23,
+    height: 20,
+  },
+  pool8CurrentBallText: {
+    fontSize: 28,
+    lineHeight: 30,
+    fontWeight: '900',
+    includeFontPadding: false,
+    textAlign: 'center',
+  },
+  scoredBallStack: {
+    position: 'absolute',
+    right: 10,
+    top: 120,
+    gap: 6,
+    alignItems: 'center',
+  },
+  scoredBallStackPool15Free: {
+    top: 122,
+    right: 8,
+    justifyContent: 'flex-start',
+    gap: 4,
+  },
+  scoredBallStackPool15FreeTwoCol: {
+    height: 124,
+    width: 64,
+    flexDirection: 'column',
+    flexWrap: 'wrap',
+    alignContent: 'space-between',
+    justifyContent: 'flex-start',
+  },
+  scoredBallStackMedium: {
+    top: 104,
+    gap: 5,
+  },
+  scoredBallStackPool15FreeMedium: {
+    top: 112,
+    right: 8,
+    gap: 3,
+  },
+  scoredBallStackPool15FreeTwoColMedium: {
+    height: 112,
+    width: 58,
+  },
+  scoredBallStackCompact: {
+    top: 92,
+    gap: 4,
+  },
+  scoredBallStackPool15FreeCompact: {
+    top: 96,
+    right: 6,
+    gap: 3,
+  },
+  scoredBallStackPool15FreeTwoColCompact: {
+    height: 104,
+    width: 52,
+  },
+  scoredBallStackInactive: {
+    opacity: 0.8,
+  },
+  scoredBallAssetWrap: {
+    backgroundColor: 'transparent',
+  },
+  scoredBallItem: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  scoredBallStripe: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: '100%',
+    height: '38%',
+    marginTop: '31%',
+  },
+  scoredBallText: {
+    fontSize: 11,
+    lineHeight: 12,
+    fontWeight: '900',
+    includeFontPadding: false,
+  },
+  playingBadge: {
+    position: 'absolute',
+    left: 0,
+    bottom: 0,
+    width: '38%',
+    minWidth: 180,
+    minHeight: 50,
+    borderTopRightRadius: 16,
+    borderTopLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    borderBottomLeftRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    zIndex: 4,
+    backgroundColor: '#1C1C20',
+  },
+  playingBadgeMedium: {
+    width: '36%',
+    minWidth: 150,
+    minHeight: 40,
+    borderTopRightRadius: 14,
+    borderBottomLeftRadius: 14,
+    paddingHorizontal: 10,
+  },
+  playingBadgeCompact: {
+    width: '34%',
+    minWidth: 118,
+    minHeight: 34,
+    borderTopRightRadius: 12,
+    borderBottomLeftRadius: 12,
+    paddingHorizontal: 8,
+  },
+  playingBadgeActive: {
+    backgroundColor: '#1A1416',
+  },
+  playingBadgeInactive: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  snookerPlayingBadge: {
+    width: '100%',
+    minWidth: 0,
+    minHeight: 44,
+    marginTop: 8,
+    borderTopRightRadius: 12,
+    borderTopLeftRadius: 12,
+    borderBottomRightRadius: 12,
+    borderBottomLeftRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    zIndex: 1,
+    elevation: 1,
+    flexShrink: 0,
+    backgroundColor: '#1C1C20',
+  },
+  playingText: {
+    fontSize: 22,
+    lineHeight: 24,
+    fontWeight: '900',
+  },
+  playingTextMedium: {
+    fontSize: 18,
+    lineHeight: 20,
+  },
+  playingTextCompact: {
+    fontSize: 14,
+    lineHeight: 16,
+  },
+  playingTextActive: {
+    color: '#FF3844',
+  },
+  playingTextInactive: {
+    color: '#FFFFFF',
+    opacity: 0.45,
+  },
+  violateWrap: {
+    position: 'absolute',
+    right: 10,
+    bottom: 10,
+    gap: 6,
+  },
+  violateWrapMedium: {
+    right: 9,
+    bottom: 9,
+    gap: 5,
+  },
+  violateWrapCompact: {
+    right: 8,
+    bottom: 8,
+    gap: 4,
+  },
+  violateWrapInactive: {
+    opacity: 0.78,
+  },
+  violateCircle: {
+    width: 52,
+    height: 52,
+    borderRadius: 999,
+    backgroundColor: '#FF2A32',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  violateCircleMedium: {
+    width: 46,
+    height: 46,
+  },
+  violateCircleCompact: {
+    width: 42,
+    height: 42,
+  },
+  violateCircleInactive: {
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  violateX: {
+    color: '#FFFFFF',
+    fontSize: 34,
+    lineHeight: 34,
+    fontWeight: '900',
+    includeFontPadding: false,
+  },
+  violateXMedium: {
+    fontSize: 30,
+    lineHeight: 30,
+  },
+  violateXCompact: {
+    fontSize: 26,
+    lineHeight: 26,
+  },
+  violateXInactive: {
+    opacity: 0.82,
+  },
+  violateCount: {
+    color: '#FFFFFF',
+    textAlign: 'right',
+    fontSize: 18,
+    lineHeight: 18,
+    fontWeight: '700',
+    includeFontPadding: false,
+    textAlignVertical: 'center',
+  },
+  violateCountMedium: {
+    fontSize: 16,
+  },
+  violateCountCompact: {
+    fontSize: 14,
+  },
+  violateCountInactive: {
+    opacity: 0.8,
+  },
+});
+
+export default memo(GamePlayer);
+

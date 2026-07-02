@@ -1,0 +1,75 @@
+// Aplus Score Android offline build config.
+// Keep debug APK self-contained so tablets/Android boxes do not need Metro.
+
+apply plugin: "com.android.application"
+apply plugin: "org.jetbrains.kotlin.android"
+apply plugin: "com.facebook.react"
+
+react {
+  autolinkLibrariesWithApp()
+
+  // Build Debug APK with index.android.bundle inside the APK.
+  // Without this, Android boxes/tablets can show "Unable to load script"
+  // unless Metro is running and reachable from the device.
+  debuggableVariants = []
+  entryFile = file("../../index.js")
+  bundleAssetName = "index.android.bundle"
+}
+
+def jscFlavor = 'org.webkit:android-jsc:+'
+
+android {
+  namespace "com.aplusscore.android"
+  buildToolsVersion rootProject.ext.buildToolsVersion
+  compileSdkVersion rootProject.ext.compileSdkVersion
+  ndkVersion "25.2.9519653"
+
+  packagingOptions {
+    pickFirst "lib/arm64-v8a/libreact_nativemodule_core.so"
+    pickFirst "lib/armeabi-v7a/libreact_nativemodule_core.so"
+    pickFirst "lib/x86/libreact_nativemodule_core.so"
+    pickFirst "lib/x86_64/libreact_nativemodule_core.so"
+    pickFirst "**/libc++_shared.so"
+    exclude "META-INF/LICENSE*"
+    exclude "META-INF/NOTICE*"
+    exclude "META-INF/AL2.0"
+    exclude "META-INF/LGPL2.1"
+    exclude "META-INF/*.kotlin_module"
+  }
+
+  buildFeatures {
+    buildConfig true
+  }
+
+  defaultConfig {
+    applicationId "com.aplusscore.android"
+    minSdkVersion rootProject.ext.minSdkVersion
+    targetSdkVersion rootProject.ext.targetSdkVersion
+    versionCode 1
+    versionName "1.0.0"
+    missingDimensionStrategy 'react-native-camera', 'general'
+    resConfigs "en", "vi"
+  }
+
+  buildTypes {
+    debug {
+    }
+    release {
+      minifyEnabled true
+      shrinkResources true
+      zipAlignEnabled true
+      proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+    }
+  }
+}
+
+dependencies {
+  implementation 'com.herohan:UVCAndroid:1.0.11'
+  implementation("com.facebook.react:react-android")
+
+  if (project.hasProperty("hermesEnabled") && hermesEnabled.toBoolean()) {
+    implementation("com.facebook.react:hermes-android")
+  } else {
+    implementation jscFlavor
+  }
+}

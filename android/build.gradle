@@ -1,0 +1,79 @@
+buildscript {
+    ext {
+        buildToolsVersion = "35.0.0"
+        minSdkVersion = 26
+        compileSdkVersion = 35
+        targetSdkVersion = 35
+        kotlinVersion = "1.9.0"
+
+        useExoplayerRtsp = true
+        useExoplayerSmoothStreaming = true
+
+        // RTSP recorder uses FFmpegKit HTTPS flavor.
+        // ffmpeg-kit-react-native still requests the retired com.arthenica artifacts,
+        // so all FFmpegKit requests are normalized below to one Maven Central fork/flavor.
+        ffmpegKitPackage = "https"
+        ffmpegKitPackageVersion = "6.0-2"
+    }
+
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.6.0")
+        classpath("com.facebook.react:react-native-gradle-plugin")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22")
+    }
+}
+
+apply plugin: "com.facebook.react.rootproject"
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+
+        // WebRTC repo
+        maven { url "https://raw.githubusercontent.com/jitsi/jitsi-maven-repository/master/releases" }
+
+        // fallback repo
+        maven { url "https://repo.maven.apache.org/maven2" }
+    }
+}
+
+subprojects { subproject ->
+    configurations.all {
+        resolutionStrategy {
+            // fix WebRTC
+            force "org.jitsi:webrtc:124.0.0"
+
+            // Pin AndroidX versions compatible with react-native-video PictureInPictureUtil
+            force "androidx.core:core:1.13.1"
+            force "androidx.core:core-ktx:1.13.1"
+            force "androidx.activity:activity:1.9.3"
+            force "androidx.activity:activity-ktx:1.9.3"
+
+            // IMPORTANT:
+            // Do NOT exclude ffmpeg-kit-min from compileClasspath. react-native-video-trim
+            // compiles against FFmpegKit classes. Excluding min makes its Kotlin compile fail.
+            // Instead, map every possible FFmpegKit flavor to ONE flavor: https.
+            // This prevents duplicate com.arthenica.ffmpegkit.* classes while keeping all
+            // modules able to compile against FFmpegKit API.
+            dependencySubstitution {
+                def ffmpegGplFlavor = "full" + "-gpl"
+                substitute module("com.arthenica:ffmpeg-kit-https") using module("io.github.maitrungduc1410:ffmpeg-kit-https:6.0.1")
+                substitute module("com.arthenica:ffmpeg-kit-min") using module("io.github.maitrungduc1410:ffmpeg-kit-https:6.0.1")
+                substitute module("com.arthenica:ffmpeg-kit-video") using module("io.github.maitrungduc1410:ffmpeg-kit-https:6.0.1")
+                substitute module("com.arthenica:ffmpeg-kit-full") using module("io.github.maitrungduc1410:ffmpeg-kit-https:6.0.1")
+                substitute module("com.arthenica:ffmpeg-kit-${ffmpegGplFlavor}") using module("io.github.maitrungduc1410:ffmpeg-kit-https:6.0.1")
+
+                substitute module("io.github.maitrungduc1410:ffmpeg-kit-min") using module("io.github.maitrungduc1410:ffmpeg-kit-https:6.0.1")
+                substitute module("io.github.maitrungduc1410:ffmpeg-kit-video") using module("io.github.maitrungduc1410:ffmpeg-kit-https:6.0.1")
+                substitute module("io.github.maitrungduc1410:ffmpeg-kit-full") using module("io.github.maitrungduc1410:ffmpeg-kit-https:6.0.1")
+                substitute module("io.github.maitrungduc1410:ffmpeg-kit-${ffmpegGplFlavor}") using module("io.github.maitrungduc1410:ffmpeg-kit-https:6.0.1")
+            }
+        }
+    }
+}

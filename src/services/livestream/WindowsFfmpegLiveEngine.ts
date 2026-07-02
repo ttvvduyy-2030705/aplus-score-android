@@ -1,0 +1,21 @@
+export const WINDOWS_FFMPEG_CONFIG_STORAGE_KEY = '@APLUS_ANDROID_OFFLINE_FFMPEG_DISABLED';
+export const DEFAULT_YOUTUBE_RTMP_URL = '';
+export type WindowsFfmpegLiveState = 'stopped' | 'starting' | 'live' | 'stopping' | 'error';
+export type WindowsFfmpegLiveConfig = Record<string, any>;
+export type WindowsFfmpegOverlaySnapshot = Record<string, any>;
+
+export const maskStreamKey = (value?: string | null) => value ? '***' : '';
+export const getWindowsLiveOverlayPaths = () => ({overlayPath: '', snapshotPath: '', snapshotMetaPath: ''});
+export const resetWindowsFfmpegOverlaySession = async (_reason = 'disabled') => undefined;
+export const getWindowsFfmpegLiveStatus = async () => ({status: 'stopped' as WindowsFfmpegLiveState});
+export const checkFfmpegAvailable = async (_ffmpegPath?: string) => ({ok: false, error: 'disabled'});
+export const listWindowsFfmpegVideoDevices = async (_ffmpegPath?: string) => [];
+export const buildFfmpegCommand = () => '';
+export const updateWindowsFfmpegOverlay = async (_snapshot?: WindowsFfmpegOverlaySnapshot) => undefined;
+export const startWindowsFfmpegYouTubeLive = async (_config?: WindowsFfmpegLiveConfig, _snapshot?: WindowsFfmpegOverlaySnapshot) => ({ok: false, error: 'disabled'});
+export const stopWindowsFfmpegYouTubeLive = async (_reason = 'disabled') => undefined;
+export const toWindowsFfmpegSnapshot = (snapshot: any): WindowsFfmpegOverlaySnapshot => snapshot || {};
+export const createWindowsFfmpegSnapshotFromGameState = (params: any): WindowsFfmpegOverlaySnapshot => ({...params});
+export const isWindowsFfmpegLocalLiveRunning = () => false;
+export const getCurrentWindowsFfmpegLiveConfig = () => null;
+export const getLastWindowsFfmpegOverlayPath = () => '';
